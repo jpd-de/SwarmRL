@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 import logging
 logger = logging.getLogger(__name__)
 
+
 class EpisodicTrainer(Trainer):
     """
     Class for the simple MLP RL implementation.
@@ -35,7 +36,7 @@ class EpisodicTrainer(Trainer):
         load_bar: bool = True,
         save_episodic_data: bool = True,
         sim_params: dict = None,
-        save_model_interval: int = 1,
+        save_models_intervall: int = 20,
     ):
         """
         Perform the RL training.
@@ -106,14 +107,28 @@ class EpisodicTrainer(Trainer):
                 visible=load_bar,
             )
 
+            # Since we do not reset the system in the first episode, we need to
+            # initialize the engine here.
+
+            if save_episodic_data:
+                self.engine = get_engine(system, f"{cycle_index}", sim_params)
+                cycle_index += 1
+            else:
+                self.engine = get_engine(system, "0", sim_params = sim_params)
+
+
             for episode in range(n_episodes):
                 # Check if the system should be reset.
-                if episode % reset_frequency == 0 or killed: #TODO: Why not and episode > 0 or killed:
+                if episode % reset_frequency == 0 or killed:
                     # Check if the model should be saved.
                     # TODO: Make this reward depending, if a checkpointing flag is set.
-                    if (episode + 1) % save_model_interval == 0:
+                    if (episode + 1) % save_models_intervall == 0:
                         self.export_models(f'{sim_params['OUT_DIR']}/Models/Model-of-cycle-{save_index}.pkl')
                     print(f"Resetting the system at episode {episode}")
+                    # TODO: Idea: Implement way of checking, whether the reward went up or down. Depending on that, save the model or not
+                    if (episode+1) % save_models_intervall == 0:
+                        self.export_models(f"{sim_params['OUT_DIR']}/Models/Models_of_cycle_{save_index}.pkl")
+                        save_index += save_models_intervall
                     self.engine = None
                     if save_episodic_data:
                         try:
@@ -134,6 +149,10 @@ class EpisodicTrainer(Trainer):
                     # Initialize the tasks and observables.
                     for agent in self.agents.values():
                         agent.reset_agent(self.engine.colloids)
+
+
+
+
 
                 self.engine.integrate(episode_length, force_fn)
 

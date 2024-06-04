@@ -75,7 +75,7 @@ class ActorCriticAgent(Agent):
         self.loss = loss
         self.intrinsic_reward = intrinsic_reward
 
-    # Properties for storing the agent data.
+        # Properties for storing the agent data.
         self.save_agent_to_file = save_agent_to_file
         self.out_folder = pathlib.Path(out_folder)
         self.is_stored = False
@@ -96,7 +96,6 @@ class ActorCriticAgent(Agent):
             Name of the class.
         """
         return "ActorCriticAgent"
-
 
     def init_h5_output(self):
         """

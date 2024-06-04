@@ -1,7 +1,7 @@
 """
 Module for the Trainer parent.
 """
-
+import logging
 from typing import List, Tuple
 
 import numpy as np
@@ -9,6 +9,7 @@ import numpy as np
 from swarmrl.agents.actor_critic import ActorCriticAgent
 from swarmrl.force_functions.force_fn import ForceFunction
 
+logger = logging.getLogger(__name__)
 
 class Trainer:
     """
@@ -92,6 +93,7 @@ class Trainer:
         for agent in self.agents.values():
             if isinstance(agent, ActorCriticAgent):
                 ag_reward, ag_killed = agent.update_agent()
+                logger.debug(f"{ag_reward=}")
                 reward += np.mean(ag_reward)
                 switches.append(ag_killed)
 
@@ -117,7 +119,7 @@ class Trainer:
 
     def restore_models(self, directory: str = "Models"):
         """
-        Export the models to the specified directory.
+        Restore the models from the specified directory.
 
         Parameters
         ----------

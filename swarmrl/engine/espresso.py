@@ -1164,7 +1164,7 @@ class EspressoMD(Engine):
             f_max=0.0, gamma=0.1, max_displacement=0.1
         )
         time = self.system.time
-        self.system.integrator.run(1000)
+        self.system.integrator.run(1000) # TODO: Change this for a longer warmup
         self.system.time = time
 
         # set the thermostat
