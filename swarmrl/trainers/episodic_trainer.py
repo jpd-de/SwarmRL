@@ -12,6 +12,8 @@ from swarmrl.trainers.trainer import Trainer
 if TYPE_CHECKING:
     from espressomd import System
 
+import logging
+logger = logging.getLogger(__name__)
 
 class EpisodicTrainer(Trainer):
     """
@@ -138,7 +140,8 @@ class EpisodicTrainer(Trainer):
                 force_fn, current_reward, killed = self.update_rl()
 
                 rewards.append(current_reward)
-
+                logger.debug(f"{episode=}")
+                logger.debug(f"{current_reward=}")
                 episode += 1
                 progress.update(
                     task,
