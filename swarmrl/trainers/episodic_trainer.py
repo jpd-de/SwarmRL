@@ -32,6 +32,8 @@ class EpisodicTrainer(Trainer):
         reset_frequency: int = 1,
         load_bar: bool = True,
         save_episodic_data: bool = True,
+        sim_params: dict = None,
+        save_model_interval: int = 1,
     ):
         """
         Perform the RL training.
@@ -56,8 +58,22 @@ class EpisodicTrainer(Trainer):
                 system runner supports episodic data saving. The get_engine function
                 should take a system and a str(cycle_index) as arguments. The
                 cycle_index is passed to the EsperessoMD engine as 'h5_group_tag'. See
-                the implementationin the test_semi_episodic_data_writing function in
+                the implementation in the test_semi_episodic_data_writing function in
                 CI/espresso_tests/integration_tests/test_rl_trainers.py
+        sim_params : dict (default=None)
+                Dictionary of simulation parameters.
+                Should contain the following key:
+                - OUT_DIR: str
+                        Output directory for the simulation data.
+                Optionally, the following keys can be included:
+                - parameters for the get_engine function.
+                - cycle_index: int
+                        As described above in save_episodic_data...
+                # TODO: Figure out, if it would be better to only pass the OUT_DIR
+                str to let the program be more common.
+        save_model_interval : int (default=1)
+                Save the model every save_model_interval episodes.
+
 
         Notes
         -----
@@ -69,6 +85,7 @@ class EpisodicTrainer(Trainer):
         current_reward = 0.0
         force_fn = self.initialize_training()
         cycle_index = 0
+        save_index = 0
         progress = Progress(
             "Episode: {task.fields[Episode]}",
             BarColumn(),
@@ -89,12 +106,17 @@ class EpisodicTrainer(Trainer):
 
             for episode in range(n_episodes):
                 # Check if the system should be reset.
-                if episode % reset_frequency == 0 or killed:
+                if episode % reset_frequency == 0 or killed: #TODO: Why not and episode > 0 or killed:
+                    # Check if the model should be saved.
+                    # TODO: Make this reward depending, if a checkpointing flag is set.
+                    if (episode + 1) % save_model_interval == 0:
+                        self.export_models(f'{sim_params['OUT_DIR']}/Models/Model-of-cycle-{save_index}.pkl')
                     print(f"Resetting the system at episode {episode}")
                     self.engine = None
                     if save_episodic_data:
                         try:
-                            self.engine = get_engine(system, f"{cycle_index}")
+                            # TODO: Check if get_engine should take the sim_params
+                            self.engine = get_engine(system, f"{cycle_index}", sim_params)
                             cycle_index += 1
                         except TypeError:
                             raise ValueError(
@@ -102,7 +124,7 @@ class EpisodicTrainer(Trainer):
                                 " saving. Your get_engine function should take a system"
                                 " and a str(cycle_index) as arguments. The cycle_index"
                                 " is passed to the EsperessoMD engine as"
-                                " 'h5_group_tag'."
+                                " 'h5_group_tag'." # TODO: Add comment about sim_params dict
                             )
                     else:
                         self.engine = get_engine(system)
