@@ -123,7 +123,7 @@ class EpisodicTrainer(Trainer):
                     # Check if the model should be saved.
                     # TODO: Make this reward depending, if a checkpointing flag is set.
                     if (episode + 1) % save_models_intervall == 0:
-                        self.export_models(f'{sim_params['OUT_DIR']}/Models/Model-of-cycle-{save_index}.pkl')
+                        self.export_models(f'{sim_params["OUT_DIR"]}/Models/Model-of-cycle-{save_index}.pkl')
                     print(f"Resetting the system at episode {episode}")
                     # TODO: Idea: Implement way of checking, whether the reward went up or down. Depending on that, save the model or not
                     if (episode+1) % save_models_intervall == 0:
@@ -158,6 +158,9 @@ class EpisodicTrainer(Trainer):
 
                 force_fn, current_reward, killed = self.update_rl()
 
+                # Add a moving source - for testing purposes
+                #self.agents['0'].task.change_source()
+                #self.agents['0'].observable.change_source()
                 rewards.append(current_reward)
                 logger.debug(f"{episode=}")
                 logger.debug(f"{current_reward=}")
