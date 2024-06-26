@@ -128,13 +128,7 @@ class EpisodicTrainer(Trainer):
 
                 rewards[episode] = current_reward
                 if self.DO_CHECKPOINT:
-                    checkpoint_flags = self.check_for_checkpoint(rewards, n_episodes, episode)
-                    save_string = ""
-                    for flag_name, flag_value in checkpoint_flags.items():
-                        if flag_value:
-                            save_string += flag_name + "_"
-                    save_string = save_string[:-1] if save_string.endswith("_") else save_string
-
+                    save_string = self.check_for_checkpoint(rewards, n_episodes, episode)
                     if save_string != "":
                         self.export_models('Models/Model-ep_{episode + 1}-cur_reward_{current_reward:.1f}-' + save_string)
 
