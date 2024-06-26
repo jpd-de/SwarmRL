@@ -94,7 +94,7 @@ class ContinuousTrainer(Trainer):
                     advance=1,
                     Episode=episode,
                     current_reward=np.round(current_reward, 2),
-                    running_reward=np.round(np.mean(rewards[episode-10:episode + 1]), 2),
+                    running_reward=running_reward,
                 )
 
         return np.array(rewards)
