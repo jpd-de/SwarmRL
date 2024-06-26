@@ -41,7 +41,7 @@ class ContinuousTrainer(Trainer):
                 If true, show a progress bar.
         """
         self.engine = system_runner
-        rewards = [0.0]
+        rewards = np.zeros(n_episodes)
         current_reward = 0.0
         episode = 0
         force_fn = self.initialize_training()
@@ -67,7 +67,7 @@ class ContinuousTrainer(Trainer):
                 running_reward=np.mean(rewards),
                 visible=load_bar,
             )
-            for _ in range(n_episodes):
+            for episode in range(n_episodes):
                 self.engine.integrate(episode_length, force_fn)
                 force_fn, current_reward, killed = self.update_rl()
 
@@ -76,6 +76,12 @@ class ContinuousTrainer(Trainer):
                     system_runner.finalize()
                     break
 
+                if self.DO_CHECKPOINT:
+                    save_string = self.check_for_checkpoint(rewards, n_episodes, episode)
+
+                    if save_string != "":
+                        self.export_models('Models/Model-ep_{episode + 1}-cur_reward_{current_reward:.1f}-' + save_string)
+                
                 rewards.append(current_reward)
                 episode += 1
                 progress.update(
@@ -83,7 +89,7 @@ class ContinuousTrainer(Trainer):
                     advance=1,
                     Episode=episode,
                     current_reward=np.round(current_reward, 2),
-                    running_reward=np.round(np.mean(rewards[-10:]), 2),
+                    running_reward=np.round(np.mean(rewards[episode-10:episode + 1]), 2),
                 )
 
         return np.array(rewards)

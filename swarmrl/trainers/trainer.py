@@ -73,11 +73,14 @@ class Trainer:
     def initialize_checkpointer(self, checkpoint_params: dict = None):
         """
         Initialize the checkpointer by taking the checkpoint_params key-value pairs.
+        It definitely needs the DO_CHECKPOINT key to be set to True to activate the checkpointer
+        All other keys are optional and depend on the specific checkpointing method.
+        
         Currently the checkpointer can do the following:
         - reward-goal-checkpointing: Save the model when a certain reward is reached.
             keys:
             - DO_GOAL_MODEL: Boolean to activate the goal-model-checkpointing.
-            - required_reward: The reward that should be reached.
+            - required_reward: The reward that should be reached. NOTE: This is very specific to the task!
             - window_width: The width of the window to calculate the average reward.
             - DO_GOAL_BREAK: Boolean to stop the training after the goal is reached.
             - running_out_length: If goal was reached, the simulation will be continued for running_out_length episodes.
@@ -86,6 +89,7 @@ class Trainer:
             keys:
             - DO_BEST_MODEL: Boolean to activate the best-model-checkpointing.
             - min_reward: The minimum reward that should be reached.
+            - window_width: The width of the window to calculate the average reward.
             - increase_factor: The factor the reward should be greater than the previous maximum reward.
             - better_wait_time: The number of episodes to wait before the first checkpoint.
         
@@ -93,6 +97,7 @@ class Trainer:
             keys:
             - DO_BACKUP_MODEL: Boolean to activate the backup-model-checkpointing.
             - backup_wait_time: The number of episodes to wait before the first checkpoint.
+            - window_width: The width of the window to calculate the average reward.
             - min_backup_reward: The minimum reward that should be reached to be able to save models that at least learned something.
         
         - Save a model in regular intervals.
@@ -106,7 +111,7 @@ class Trainer:
             Parameters to use in the checkpointer.
         """
         self.rewards = []
-        self.window_width = checkpoint_params.get('window_width', 20)
+        self.window_width = checkpoint_params.get('window_width', 30)
         self.STOP_TRAINING_NOW = False
 
         if self.window_width < 1:
@@ -119,7 +124,7 @@ class Trainer:
             self.DO_GOAL_MODEL = False
         else:
             self.DO_GOAL_MODEL = checkpoint_params['DO_GOAL_MODEL']
-            self.required_reward = checkpoint_params.get('required_reward', 1e2)
+            self.required_reward = checkpoint_params.get('required_reward', 200)
             self.DO_GOAL_BREAK = checkpoint_params.get('DO_GOAL_BREAK', True)
             self.running_out_length = checkpoint_params.get('running_out_length', 0)
             self.old_max = 0
@@ -129,7 +134,6 @@ class Trainer:
             self.DO_BEST_MODEL = False
         else:
             self.DO_BEST_MODEL = checkpoint_params['DO_BEST_MODEL']
-            # Get parameter
             self.min_reward = checkpoint_params.get('min_reward', 250)
             self.better_increase_factor = checkpoint_params.get('increase_factor', 1.05)
             self.better_wait_time = checkpoint_params.get('better_wait_time', 20)
@@ -147,7 +151,7 @@ class Trainer:
             self.DO_REGULAR = False
         else:
             self.DO_REGULAR = checkpoint_params['DO_REGULAR']
-            self.save_models_intervall = checkpoint_params.get('save_models_intervall', 20)
+            self.save_models_intervall = checkpoint_params.get('save_models_intervall', 25)
         
         if self.DO_GOAL_BREAK == True:
             self.stop_episode = 0
@@ -164,6 +168,11 @@ class Trainer:
                 The total number of episodes.
         current_episode : int
                 The current episode.
+
+        Returns
+        -------
+        save_string : str
+                A string that contains the flags of the checkpointing criterias that were met.
         """
         SAVE_GOAL = False
         SAVE_BEST = False
@@ -217,13 +226,18 @@ class Trainer:
                     self.min_backup_reward = current_reward
                     SAVE_BACKUP = True
 
-        result = {'SAVE_GOAL': SAVE_GOAL, 
+        checkpoint_flags = {'SAVE_GOAL': SAVE_GOAL, 
                     'SAVE_BEST': SAVE_BEST,
                     'SAVE_BACKUP': SAVE_BACKUP,
                     'SAVE_REGULAR': SAVE_REGULAR,
                     'STOP_TRAINING_NOW': self.STOP_TRAINING_NOW}
+        save_string = ""
+        for flag_name, flag_value in checkpoint_flags.items():
+            if flag_value:
+                save_string += flag_name + "_"
+        save_string = save_string[:-1] if save_string.endswith("_") else save_string
 
-        return result
+        return save_string
 
     def initialize_training(self) -> ForceFunction:
         """

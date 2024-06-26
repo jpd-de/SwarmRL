@@ -100,6 +100,7 @@ class EpisodicTrainer(Trainer):
                 # Check if the system should be reset.
                 if episode % reset_frequency == 0 or killed:
                     print(f"Resetting the system at episode {episode}")
+
                     self.engine = None
                     if save_episodic_data:
                         try:
