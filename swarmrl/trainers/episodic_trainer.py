@@ -133,12 +133,16 @@ class EpisodicTrainer(Trainer):
                         self.export_models('Models/Model-ep_{episode + 1}-cur_reward_{current_reward:.1f}-' + save_string)
 
                 episode += 1
+                if episode < 10:
+                    running_reward = np.round(np.mean(rewards[:episode]), 2)
+                else:
+                    running_reward = np.round(np.mean(rewards[episode-10:episode + 1]), 2)
                 progress.update(
                     task,
                     advance=1,
                     Episode=episode,
                     current_reward=np.round(current_reward, 2),
-                    running_reward=np.round(np.mean(rewards[episode-10:episode + 1]), 2),
+                    running_reward=running_reward,
                 )
                 self.engine.finalize()
 
