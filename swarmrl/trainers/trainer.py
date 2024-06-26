@@ -41,6 +41,7 @@ class Trainer:
     def __init__(
         self,
         agents: List[ActorCriticAgent],
+        checkpoint_params: dict = None,
     ):
         """
         Constructor for the MLP RL.
@@ -58,6 +59,171 @@ class Trainer:
         # TODO: Maybe turn into a dataclass? Not sure if it helps yet.
         for agent in agents:
             self.agents[str(agent.particle_type)] = agent
+
+        # Initialize the checkpointer
+
+        self.checkpoint_params = checkpoint_params
+        if self.checkpoint_params is None:
+            self.DO_CHECKPOINT = False
+        else:
+            self.DO_CHECKPOINT = True
+            self.STOP_TRAINING_NOW = False
+            self.initialize_checkpointer(checkpoint_params)
+
+    def initialize_checkpointer(self, checkpoint_params: dict = None):
+        """
+        Initialize the checkpointer by taking the checkpoint_params key-value pairs.
+        Currently the checkpointer can do the following:
+        - reward-goal-checkpointing: Save the model when a certain reward is reached.
+            keys:
+            - DO_GOAL_MODEL: Boolean to activate the goal-model-checkpointing.
+            - required_reward: The reward that should be reached.
+            - window_width: The width of the window to calculate the average reward.
+            - DO_GOAL_BREAK: Boolean to stop the training after the goal is reached.
+            - running_out_length: If goal was reached, the simulation will be continued for running_out_length episodes.
+
+        - best-reward-checkpointing: Saves the model, when the reward is greater than the previous maximum reward.
+            keys:
+            - DO_BEST_MODEL: Boolean to activate the best-model-checkpointing.
+            - min_reward: The minimum reward that should be reached.
+            - increase_factor: The factor the reward should be greater than the previous maximum reward.
+            - better_wait_time: The number of episodes to wait before the first checkpoint.
+        
+        - backup-model-checkpointing: Saves the model, if the reward is sinking suddenly. Could be used for analysing forgetting models.
+            keys:
+            - DO_BACKUP_MODEL: Boolean to activate the backup-model-checkpointing.
+            - backup_wait_time: The number of episodes to wait before the first checkpoint.
+            - min_backup_reward: The minimum reward that should be reached to be able to save models that at least learned something.
+        
+        - Save a model in regular intervals.
+            keys:
+            - DO_REGULAR: Boolean to activate the regular-checkpointing.
+            - save_models_intervall: The intervall size of episodes after which models will be saved.
+
+        Parameters
+        ----------
+        checkpoint_params : dict
+            Parameters to use in the checkpointer.
+        """
+        self.rewards = []
+        self.window_width = checkpoint_params.get('window_width', 20)
+        self.STOP_TRAINING_NOW = False
+
+        if self.window_width < 1:
+            self.DO_RUNNING_OUT = False
+        else:
+            self.DO_RUNNING_OUT = True
+
+        # initialize reward-goal-checkpointing
+        if 'DO_GOAL_MODEL' not in checkpoint_params.keys():
+            self.DO_GOAL_MODEL = False
+        else:
+            self.DO_GOAL_MODEL = checkpoint_params['DO_GOAL_MODEL']
+            self.required_reward = checkpoint_params.get('required_reward', 1e2)
+            self.DO_GOAL_BREAK = checkpoint_params.get('DO_GOAL_BREAK', True)
+            self.running_out_length = checkpoint_params.get('running_out_length', 0)
+            self.old_max = 0
+
+        # initialize best-model-checkpointing
+        if 'DO_BEST_MODEL' not in checkpoint_params.keys():
+            self.DO_BEST_MODEL = False
+        else:
+            self.DO_BEST_MODEL = checkpoint_params['DO_BEST_MODEL']
+            # Get parameter
+            self.min_reward = checkpoint_params.get('min_reward', 250)
+            self.better_increase_factor = checkpoint_params.get('increase_factor', 1.05)
+            self.better_wait_time = checkpoint_params.get('better_wait_time', 20)
+
+        # Initialize backup-model-checkpointing
+        if 'DO_BACKUP_MODEL' not in checkpoint_params.keys():
+            self.DO_BACKUP_MODEL = False
+        else:
+            self.DO_BACKUP_MODEL = checkpoint_params['DO_BACKUP_MODEL']
+            self.backup_wait_time = checkpoint_params.get('backup_wait_time', 20)
+            self.min_backup_reward = checkpoint_params.get('min_backup_reward', 250)
+
+        # Initialize regular-checkpointing
+        if 'DO_REGULAR' not in checkpoint_params.keys():
+            self.DO_REGULAR = False
+        else:
+            self.DO_REGULAR = checkpoint_params['DO_REGULAR']
+            self.save_models_intervall = checkpoint_params.get('save_models_intervall', 20)
+        
+        if self.DO_GOAL_BREAK == True:
+            self.stop_episode = 0
+
+    def check_for_checkpoint(self, rewards: np.ndarray, n_episodes: int, current_episode: int):
+        """
+        Check if a model-backup of the current state should be saved.
+
+        Parameters
+        ----------
+        reward : np.ndarray
+                The current reward data.
+        n_episodes : int
+                The total number of episodes.
+        current_episode : int
+                The current episode.
+        """
+        SAVE_GOAL = False
+        SAVE_BEST = False
+        SAVE_BACKUP = False
+        SAVE_REGULAR = False
+
+        self.rewards = rewards.copy()
+        current_reward = rewards[current_episode]
+
+        if self.DO_CHECKPOINT == True:
+            if self.DO_REGULAR == True:
+                if (current_episode + 1) % self.save_models_intervall == 0:
+                    SAVE_REGULAR = True
+
+            if self.DO_GOAL_MODEL == True or self.DO_BEST_MODEL == True or self.DO_BACKUP_MODEL == True:
+                if current_episode > self.window_width:
+                    average_window_reward = np.mean(self.rewards[current_episode-self.window_width:current_episode+1])
+                else:
+                    average_window_reward = np.mean(self.rewards[:current_episode + 1])
+
+            # Do goal-model-checkpointing
+            if self.DO_GOAL_MODEL == True:
+                if (average_window_reward >= self.required_reward and
+                    current_reward >= self.required_reward):
+
+                    if self.DO_GOAL_BREAK == True:
+                        self.STOP_TRAINING_NOW = True
+                        if self.DO_RUNNING_OUT == True:
+                            self.stop_episode = current_episode + self.running_out_length
+                        else:
+                            self.stop_episode = current_episode
+                        if self.stop_episode == 0:
+                            self.STOP_TRAINING_NOW = False
+                    SAVE_GOAL = True
+            
+            # Do best-model-checkpointing
+            if self.DO_BEST_MODEL == True:
+                if (current_episode > self.better_wait_time and
+                    current_reward > self.min_reward and
+                    average_window_reward > self.better_increase_factor * self.old_max and
+                    current_reward > self.old_max):
+
+                    self.old_max = current_reward
+                    SAVE_BEST = True
+
+            # Do backup-model-checkpointing
+            if self.DO_BACKUP_MODEL == True:
+                if (current_episode > self.backup_wait_time and
+                    self.min_backup_reward < current_reward < np.max(self.rewards)):
+
+                    self.min_backup_reward = current_reward
+                    SAVE_BACKUP = True
+
+        result = {'SAVE_GOAL': SAVE_GOAL, 
+                    'SAVE_BEST': SAVE_BEST,
+                    'SAVE_BACKUP': SAVE_BACKUP,
+                    'SAVE_REGULAR': SAVE_REGULAR,
+                    'STOP_TRAINING_NOW': self.STOP_TRAINING_NOW}
+
+        return result
 
     def initialize_training(self) -> ForceFunction:
         """
@@ -117,7 +283,7 @@ class Trainer:
 
     def restore_models(self, directory: str = "Models"):
         """
-        Export the models to the specified directory.
+        Restore the models from the specified directory.
 
         Parameters
         ----------

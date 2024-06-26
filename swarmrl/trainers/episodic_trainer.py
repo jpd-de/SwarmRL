@@ -65,7 +65,7 @@ class EpisodicTrainer(Trainer):
         simulation, the system will be reset.
         """
         killed = False
-        rewards = [0.0]
+        rewards = np.zeros(n_episodes)
         current_reward = 0.0
         force_fn = self.initialize_training()
         cycle_index = 0
@@ -86,6 +86,15 @@ class EpisodicTrainer(Trainer):
                 running_reward=np.mean(rewards),
                 visible=load_bar,
             )
+
+            # Since we do not reset the system in the first episode, we need to
+            # initialize the engine here.
+
+            if save_episodic_data:
+                self.engine = get_engine(system, f"{cycle_index}")
+                cycle_index += 1
+            else:
+                self.engine = get_engine(system, '0')
 
             for episode in range(n_episodes):
                 # Check if the system should be reset.
@@ -110,12 +119,23 @@ class EpisodicTrainer(Trainer):
                     # Initialize the tasks and observables.
                     for agent in self.agents.values():
                         agent.reset_agent(self.engine.colloids)
+                # Done with reset
 
                 self.engine.integrate(episode_length, force_fn)
 
                 force_fn, current_reward, killed = self.update_rl()
 
-                rewards.append(current_reward)
+                rewards[episode] = current_reward
+                if self.DO_CHECKPOINT:
+                    checkpoint_flags = self.check_for_checkpoint(rewards, n_episodes, episode)
+                    save_string = ""
+                    for flag_name, flag_value in checkpoint_flags.items():
+                        if flag_value:
+                            save_string += flag_name + "_"
+                    save_string = save_string[:-1] if save_string.endswith("_") else save_string
+
+                    if save_string != "":
+                        self.export_models('Models/Model-ep_{episode + 1}-cur_reward_{current_reward:.1f}-' + save_string)
 
                 episode += 1
                 progress.update(
@@ -123,8 +143,16 @@ class EpisodicTrainer(Trainer):
                     advance=1,
                     Episode=episode,
                     current_reward=np.round(current_reward, 2),
-                    running_reward=np.round(np.mean(rewards[-10:]), 2),
+                    running_reward=np.round(np.mean(rewards[episode-10:episode + 1]), 2),
                 )
                 self.engine.finalize()
 
+                if self.STOP_TRAINING_NOW == True:
+                    self.DO_CHECKPOINT = False
+
+                    if self.DO_RUNNING_OUT == True and episode <= self.stop_episode:
+                        print(f"Stopping criterion reached, but running out training until {self.stop_episode}")
+                    else:
+                        print(f"Stopping training at episode {episode}")
+                        break
         return np.array(rewards)
