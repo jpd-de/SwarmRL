@@ -87,15 +87,6 @@ class EpisodicTrainer(Trainer):
                 visible=load_bar,
             )
 
-            # Since we do not reset the system in the first episode, we need to
-            # initialize the engine here.
-
-            if save_episodic_data:
-                self.engine = get_engine(system, f"{cycle_index}")
-                cycle_index += 1
-            else:
-                self.engine = get_engine(system, '0')
-
             for episode in range(n_episodes):
                 # Check if the system should be reset.
                 if episode % reset_frequency == 0 or killed:
