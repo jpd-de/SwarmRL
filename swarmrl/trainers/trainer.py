@@ -75,6 +75,7 @@ class Trainer:
         Initialize the checkpointer by taking the checkpoint_params key-value pairs.
         It automatically sets the DO_CHECKPOINT key to True if the checkpoint_params is not None.
         All other keys are optional and depend on the specific checkpointing method.
+        If not provided, they will be set to default values.
         
         Currently the checkpointer can do the following:
         - reward-goal-checkpointing: Save the model when a certain reward is reached.
