@@ -83,7 +83,12 @@ class ContinuousTrainer(Trainer):
                         self.export_models('Models/Model-ep_{episode + 1}-cur_reward_{current_reward:.1f}-' + save_string)
                 
                 rewards.append(current_reward)
+
                 episode += 1
+                if episode < 10:
+                    running_reward = np.mean(rewards)
+                else:
+                    running_reward = np.mean(rewards[episode-10:episode + 1])
                 progress.update(
                     task,
                     advance=1,
