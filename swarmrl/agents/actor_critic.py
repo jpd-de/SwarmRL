@@ -16,6 +16,9 @@ from swarmrl.observables.observable import Observable
 from swarmrl.tasks.task import Task
 from swarmrl.utils.colloid_utils import TrajectoryInformation
 
+import pathlib
+import h5py
+
 
 class ActorCriticAgent(Agent):
     """
@@ -32,6 +35,11 @@ class ActorCriticAgent(Agent):
         loss: Loss = ProximalPolicyLoss(),
         train: bool = True,
         intrinsic_reward: IntrinsicReward = None,
+        save_agent_to_file: bool = False,
+        out_folder: str = "./Agent_Data",
+        n_saves_per_file = int,
+        do_reward_smoothing : bool = False,
+        reward_smooth_intervall: int = 5,
     ):
         """
         Constructor for the actor-critic protocol.
@@ -52,6 +60,14 @@ class ActorCriticAgent(Agent):
                 Flag to indicate if the agent is training.
         intrinsic_reward : IntrinsicReward (default=None)
                 Intrinsic reward to use for the agent.
+        save_agent_to_file : bool (default=False)
+                Flag to indicate if the agent should record data.
+        out_folder : str (default="./Agent_Data")
+                Folder to store the agent data.
+        do_reward_smoothing : bool (default=False)
+                Flag to indicate if the rewards should be smoothed.
+        smooth_intervall : int (default=5)
+                Intervall to smooth the rewards over.
         """
         # Properties of the agent.
         self.network = network
@@ -62,9 +78,24 @@ class ActorCriticAgent(Agent):
         self.train = train
         self.loss = loss
         self.intrinsic_reward = intrinsic_reward
+        self.do_reward_smoothing = do_reward_smoothing
+        self.reward_smooth_intervall = reward_smooth_intervall
+
+        # Properties for storing the agent data.
+        self.save_agent_to_file = save_agent_to_file
+        self.out_folder = pathlib.Path(out_folder)
+        self.is_stored = False
+        self.n_saves_per_file = n_saves_per_file 
+        self.n_saved_files = 0
+        self.n_written_to_file = 0
 
         # Trajectory to be updated.
         self.trajectory = TrajectoryInformation(particle_type=self.particle_type)
+
+        if self.do_reward_smoothing:
+            assert self.reward_smooth_intervall > 0, "Reward smoothing intervall must be greater than 0"
+            self.reward_storage = []
+            self.agent_resetted = False
 
     def __name__(self) -> str:
         """
@@ -77,9 +108,80 @@ class ActorCriticAgent(Agent):
         """
         return "ActorCriticAgent"
 
+    def init_h5_output(self):
+        """
+        Initialize the HDF5 output file.
+
+        """
+        
+        
+        self.h5_filename = self.out_folder / f"agent_data{self.n_saved_files}.hdf5"
+        self.out_folder.mkdir(parents=True, exist_ok=True)
+        self.data_holder = {
+            'features': list(),
+            'actions': list(),
+            'log_probs': list(),
+            'rewards': list(),
+        }
+
+        episode_length = np.array(self.trajectory.features).shape[0]
+        n_colloids = np.array(self.trajectory.features).shape[1]
+        n_observables = np.array(self.trajectory.features).shape[2]
+
+        with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
+            agent_group = h5_outfile.require_group(f"Agent_{self.particle_type}")
+            dataset_kwargs = dict(compression="gzip")
+            
+            agent_group.require_dataset(
+                'features',
+                shape = (1, episode_length, n_colloids, n_observables),
+                maxshape=(None, episode_length, n_colloids, n_observables),
+                dtype = np.float32,
+                **dataset_kwargs,
+            )
+            for name in ['actions', 'log_probs', 'rewards']:
+                agent_group.require_dataset(
+                    name,
+                    shape=(1, episode_length, n_colloids),
+                    maxshape=(None, episode_length, n_colloids),
+                    dtype = int if name == 'actions' else float,
+                    **dataset_kwargs,
+                )
+
+        self.is_stored = True
+
+        self.write_idx = 0
+        self.h5_time_steps_written = 0
+        self.n_saved_files += 1
+    
+    def write_to_h5(self):
+        """
+        Write the agents data for one episodes to the HDF5 file.
+        """
+        n_new_timesteps = 1 
+
+        self.data_holder['features'].append(self.trajectory.features)
+        self.data_holder['actions'].append(self.trajectory.actions)
+        self.data_holder['log_probs'].append(self.trajectory.log_probs)
+        self.data_holder['rewards'].append(self.trajectory.rewards)
+
+        with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
+            agent_group = h5_outfile[f"Agent_{self.particle_type}"]
+
+            for key in self.data_holder.keys():
+                # values[0] correspond to the episode length
+                dataset = agent_group[key]
+                values = np.stack(self.data_holder[key], axis=0)
+                dataset.resize(self.write_idx + values.shape[0], axis = 0)
+                dataset[self.write_idx : self.write_idx + values.shape[0]] = values
+        
+        self.h5_time_steps_written =+ n_new_timesteps
+
+    
     def update_agent(self) -> tuple:
         """
         Update the agents network.
+        # This gets performed after every episode.
 
         Returns
         -------
@@ -103,6 +205,21 @@ class ActorCriticAgent(Agent):
         if self.intrinsic_reward:
             self.intrinsic_reward.update(self.trajectory)
 
+        # Save the agents data if requested
+        if self.save_agent_to_file == True:
+            
+            if self.is_stored == False:
+                self.init_h5_output()
+                print("Creating a new file")
+            
+            self.write_to_h5()
+            self.n_written_to_file += 1
+            
+            # Check if a new file should be started for faster simulations
+            if self.n_written_to_file >= self.n_saves_per_file:
+                self.is_stored = False
+                self.n_written_to_file = 0
+
         # Reset the trajectory storage.
         self.reset_trajectory()
 
@@ -121,6 +238,7 @@ class ActorCriticAgent(Agent):
         """
         self.observable.initialize(colloids)
         self.task.initialize(colloids)
+        self.agent_resetted = True
 
     def reset_trajectory(self):
         """
@@ -168,6 +286,7 @@ class ActorCriticAgent(Agent):
         colloids : List[Colloid]
                 List of colloids in the system.
         """
+
         state_description = self.observable.compute_observable(colloids)
         action_indices, log_probs = self.network.compute_action(
             observables=state_description
@@ -187,9 +306,37 @@ class ActorCriticAgent(Agent):
             self.trajectory.features.append(state_description)
             self.trajectory.actions.append(action_indices)
             self.trajectory.log_probs.append(log_probs)
+
+            if self.do_reward_smoothing:
+                if self.agent_resetted:
+                    self.reward_storage = []
+                    assert self.trajectory.rewards == [], "Trajectory rewards should be empty after reset"
+                    self.agent_resetted = False
+
+                while len(self.reward_storage) > self.reward_smooth_intervall + 1:
+                    self.reward_storage.pop(0)
+                # Create working copy of the reward storage
+                old_rewards = self.reward_storage.copy()
+                # save the current rewards for the next timestep
+                self.reward_storage.append(rewards)
+
+                if old_rewards != []:
+                    old_rewards = np.array(old_rewards)
+                    ep_slice = len(old_rewards)
+                    if ep_slice < self.reward_smooth_intervall:
+                        for j in range(len(colloids)):
+                            old_rewards[-1, j] = np.mean(old_rewards[-ep_slice:, j])
+
+
+                        rewards = old_rewards[-1,:]
+                    else:
+                        for j in range(len(colloids)):
+                            old_rewards[-1, j] = np.mean(old_rewards[-self.reward_smooth_intervall:, j])
+ 
+                        rewards = old_rewards[-1,:]
+
             self.trajectory.rewards.append(rewards)
             self.trajectory.killed = self.task.kill_switch
-
         self.kill_switch = self.task.kill_switch
 
         return chosen_actions

@@ -1,5 +1,5 @@
 """
-Module for the EpisodicTrainer
+Module for the ResetTrainer
 """
 
 from typing import TYPE_CHECKING
@@ -17,7 +17,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class EpisodicTrainer(Trainer):
+class ResetTrainer(Trainer):
     """
     Class for the simple MLP RL implementation.
 
@@ -37,6 +37,8 @@ class EpisodicTrainer(Trainer):
         load_bar: bool = True,
         save_episodic_data: bool = True,
         sim_params: dict = None,
+        threshold: float = -2,
+        threshold_fraction: float = 0.5,
     ):
         """
         Perform the RL training.
@@ -63,6 +65,18 @@ class EpisodicTrainer(Trainer):
                 cycle_index is passed to the EsperessoMD engine as 'h5_group_tag'. See
                 the implementationin the test_semi_episodic_data_writing function in
                 CI/espresso_tests/integration_tests/test_rl_trainers.py
+        sim_params : dict (default=None)
+                Dictionary of simulation parameters.
+                Should contain the following keys:
+                - OUT_DIR : str
+                        Output directory for the simulation.
+                - Everything that get_engine needs
+                -> good workflow for me (all params in my case like timestep...)
+        threshold: float
+                Determines the threshold for the reset of the colloids
+                based on their positions.
+        threshold_fraction: float
+                Determines how many colloids need to pass the threshold before resetting
 
         Notes
         -----
@@ -74,6 +88,7 @@ class EpisodicTrainer(Trainer):
         current_reward = 0.0
         force_fn = self.initialize_training()
         cycle_index = 0
+        push_counter = 0
         progress = Progress(
             "Episode: {task.fields[Episode]}",
             BarColumn(),
@@ -95,9 +110,26 @@ class EpisodicTrainer(Trainer):
             break_training = False
             for episode in range(n_episodes):
                 # Check if the system should be reset.
-                if episode % reset_frequency == 0 or killed:
+                # First check colloid positions
+                if episode % reset_frequency != 0:
+                    box_length_y = self.engine.params.box_length.m_as("sim_length")[1]
+                    colloid_positions = self.engine.get_colloid_positions()
+
+                    frac_below = np.mean(
+                        colloid_positions[:, 1] / box_length_y < threshold
+                    )
+                    pushed_out = frac_below >= threshold_fraction
+                    if not pushed_out:
+                        push_counter += 1
+                if (
+                    episode == 0
+                    or killed
+                    or pushed_out
+                    or push_counter == reset_frequency
+                ):
                     print(f"Resetting the system at episode {episode}")
                     self.engine = None
+                    push_counter = 1
                     if save_episodic_data:
                         try:
                             self.engine = get_engine(
@@ -114,10 +146,10 @@ class EpisodicTrainer(Trainer):
                             )
                     else:
                         self.engine = get_engine(system, "0", sim_params)
-
                     # Initialize the tasks and observables.
                     for agent in self.agents.values():
                         agent.reset_agent(self.engine.colloids)
+                # Done with reset-check
 
                 self.engine.integrate(episode_length, force_fn)
 

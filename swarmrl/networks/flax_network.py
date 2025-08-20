@@ -146,7 +146,7 @@ class FlaxModel(Network, ABC):
             self.model_state = self.model_state.apply_gradients(grads=grads)
 
         # Logging for post-train model state
-        logger.debug(f"{self.model_state=}")
+        #logger.debug(f"{self.model_state=}")
 
         self.epoch_count += 1
 
@@ -178,7 +178,7 @@ class FlaxModel(Network, ABC):
             logits, _ = self.apply_fn(
                 {"params": self.model_state["params"]}, np.array(observables)
             )
-        logger.debug(f"{logits=}")  # (n_colloids, n_actions)
+        #logger.debug(f"{logits=}")  # (n_colloids, n_actions)
 
         # Compute the action
         indices = self.sampling_strategy(logits)

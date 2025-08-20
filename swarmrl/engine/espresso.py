@@ -1164,7 +1164,7 @@ class EspressoMD(Engine):
             f_max=0.0, gamma=0.1, max_displacement=0.1
         )
         time = self.system.time
-        self.system.integrator.run(1000)
+        self.system.integrator.run(100)  # TODO: Change this for a longer warmup
         self.system.time = time
 
         # set the thermostat
@@ -1212,6 +1212,7 @@ class EspressoMD(Engine):
             Model with which to compute external forces.
         """
         swarmrl_colloids = []
+        taken_actions = []
         if force_model is not None:
             for col in self.colloids:
                 swarmrl_colloids.append(
@@ -1223,7 +1224,9 @@ class EspressoMD(Engine):
                         type=col.type,
                     )
                 )
+
             actions = force_model.calc_action(swarmrl_colloids)
+
             for action, coll in zip(actions, self.colloids):
                 coll.swimming = {"f_swim": action.force}
                 coll.ext_torque = (
@@ -1247,6 +1250,8 @@ class EspressoMD(Engine):
                             # plusminus numerical errors
                             rotation_axis = [0, 0, round(rotation_axis[2])]
                             coll.rotate(axis=rotation_axis, angle=rotation_angle)
+        if self.integration_initialised is True:
+            logger.debug(f"{taken_actions=}")
 
     def integrate(self, n_slices, force_model: ForceFunction = None):
         """
@@ -1304,6 +1309,7 @@ class EspressoMD(Engine):
             self.system.integrator.run(
                 steps_to_next, reuse_forces=True, recalc_forces=False
             )
+
             self.step_idx += steps_to_next
 
     def finalize(self):
@@ -1344,3 +1350,19 @@ class EspressoMD(Engine):
                 The class unit registry.
         """
         return self.ureg
+
+    def get_colloid_positions(self):
+        """
+        Provide access to colloid positions.
+        Used in the ResetTrainer module
+
+        Returns
+        -------
+        colloid_positions: np.ndarray
+                All colloid positions
+        """
+        colloid_positions = []
+        for colloid in self.colloids:
+            if colloid.type == 0:
+                colloid_positions.append(colloid.pos)
+        return np.array(colloid_positions)

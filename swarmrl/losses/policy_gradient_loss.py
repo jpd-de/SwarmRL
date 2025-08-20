@@ -94,11 +94,12 @@ class PolicyGradientLoss(Loss):
         advantage = returns - predicted_values
         logger.debug(f"{advantage=}")
 
-        actor_loss = -1 * ((log_probs * advantage).sum(axis=0)).sum()
-        logger.debug(f"{actor_loss=}")
-
         # Sum over time steps and average over agents.
         critic_loss = optax.huber_loss(predicted_values, returns).sum(axis=0).sum()
+
+        advantage = jax.lax.stop_gradient(advantage)
+        actor_loss = -1 * ((log_probs * advantage).sum(axis=0)).sum()
+        logger.debug(f"{actor_loss=}")
 
         return actor_loss + critic_loss
 
@@ -117,9 +118,11 @@ class PolicyGradientLoss(Loss):
         -------
 
         """
-        feature_data = jnp.array(episode_data.features)
-        action_data = jnp.array(episode_data.actions)
-        reward_data = jnp.array(episode_data.rewards)
+        # Restructure the data to shift the rewards to after the action
+        # is taken.
+        feature_data = jnp.array(episode_data.features)[:-1]
+        action_data = jnp.array(episode_data.actions)[:-1]
+        reward_data = jnp.array(episode_data.rewards)[1:]
 
         self.n_particles = jnp.shape(feature_data)[1]
         self.n_time_steps = jnp.shape(feature_data)[0]

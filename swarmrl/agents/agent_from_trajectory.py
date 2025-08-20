@@ -101,6 +101,7 @@ class AgentFromTrajectory(ClassicalAgent):
 
         for colloid in colloids:
             if colloid.type not in self.acts_on_types:
+                actions.append(Action())
                 continue
 
             if self.force_function is not None:

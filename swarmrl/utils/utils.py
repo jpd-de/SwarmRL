@@ -156,7 +156,7 @@ def setup_swarmrl_logger(
         return numeric_level
 
     logger = logging.getLogger(swarmrl._ROOT_NAME)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
         fmt="[%(levelname)-10s] %(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
@@ -278,18 +278,21 @@ def save_memory(memory: dict):
 
     Returns
     -------
-    Dumps a  file to disc to evaluate training.
+    Dumps a file to disc to evaluate training.
     """
     empty_memory = {key: [] for key in memory.keys()}
     empty_memory["file_name"] = memory["file_name"]
+
     try:
         reloaded_dict = np.load(memory["file_name"], allow_pickle=True).item()
-        for key, _ in reloaded_dict.items():
-            reloaded_dict[key].append(memory[key])
+        for key, _ in memory.items():
+            if key != "file_name":
+                reloaded_dict[key].append(memory[key])
         np.save(memory["file_name"], reloaded_dict, allow_pickle=True)
     except FileNotFoundError:
-        for key, _ in empty_memory.items():
-            empty_memory[key].append(memory[key])
+        for key, _ in empty_memory.items():   
+            if key != 'file_name':
+                empty_memory[key].append(memory[key]) 
         np.save(memory["file_name"], empty_memory, allow_pickle=True)
     return empty_memory
 

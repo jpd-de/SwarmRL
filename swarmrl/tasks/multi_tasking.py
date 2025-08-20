@@ -58,5 +58,4 @@ class MultiTasking(Task):
         for task in self.tasks:
             ts = task(colloids)
             rewards += ts
-
         return rewards
