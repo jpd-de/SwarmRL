@@ -18,6 +18,7 @@ class GoalCheckpointer(BaseCheckpointer):
 
     def __init__(
         self,
+        out_path,
         required_reward=200,
         window_width=30,
         do_goal_break=False,
@@ -40,7 +41,7 @@ class GoalCheckpointer(BaseCheckpointer):
             The number of episodes to run after the goal is reached
             before stopping training.
         """
-        super().__init__()
+        super().__init__(out_path)
         self.required_reward = required_reward
         self.window_width = window_width
         self.DO_GOAL_BREAK = do_goal_break
@@ -78,7 +79,7 @@ class GoalCheckpointer(BaseCheckpointer):
                     self.stop_episode = current_episode + self.running_out_length
                 else:
                     self.stop_episode = current_episode
-
+        print('avg', avg_reward)
         return avg_reward >= self.required_reward
 
     def check_for_break(self):

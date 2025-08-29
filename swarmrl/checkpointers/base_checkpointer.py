@@ -16,9 +16,10 @@ class BaseCheckpointer:
 
     """
 
-    def __init__(self):
+    def __init__(self, out_path=None):
         self.DO_CHECKPOINT = True
         self.rewards = []
+        self.out_path = out_path
 
     def check_for_checkpoint(self, *args, **kwargs) -> bool:
         """

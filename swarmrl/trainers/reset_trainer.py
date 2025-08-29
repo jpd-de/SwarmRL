@@ -88,6 +88,7 @@ class ResetTrainer(Trainer):
         current_reward = 0.0
         force_fn = self.initialize_training()
         cycle_index = 0
+        out_dir = sim_params['OUT_DIR']
         push_counter = 0
         progress = Progress(
             "Episode: {task.fields[Episode]}",
@@ -166,10 +167,9 @@ class ResetTrainer(Trainer):
                         )
                         if export[-1]:
                             save_string += f"-{checkpointer.__class__.__name__}"
-
                     if any(export):
                         self.export_models(
-                            f"Models/Model-ep_{episode + 1}"
+                            f"{self.checkpoint_path}/Model-ep_{episode + 1}"
                             f"-cur_reward_{current_reward:.1f}"
                             f"{save_string}"
                             + "/"
