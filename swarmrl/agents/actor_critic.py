@@ -108,45 +108,74 @@ class ActorCriticAgent(Agent):
         """
         return "ActorCriticAgent"
 
-    def init_h5_output(self):
+    def init_h5_output(self, deployment=False):
         """
         Initialize the HDF5 output file.
 
         """
         
-        
         self.h5_filename = self.out_folder / f"agent_data{self.n_saved_files}.hdf5"
         self.out_folder.mkdir(parents=True, exist_ok=True)
-        self.data_holder = {
-            'features': list(),
-            'actions': list(),
-            'log_probs': list(),
-            'rewards': list(),
-        }
+        if not deployment:
+            self.data_holder = {
+                'features': list(),
+                'actions': list(),
+                'log_probs': list(),
+                'rewards': list(),
+            }
 
-        episode_length = np.array(self.trajectory.features).shape[0]
-        n_colloids = np.array(self.trajectory.features).shape[1]
-        n_observables = np.array(self.trajectory.features).shape[2]
+            episode_length = np.array(self.trajectory.features).shape[0]
+            n_colloids = np.array(self.trajectory.features).shape[1]
+            n_observables = np.array(self.trajectory.features).shape[2]
 
-        with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
-            agent_group = h5_outfile.require_group(f"Agent_{self.particle_type}")
-            dataset_kwargs = dict(compression="gzip")
-            
-            agent_group.require_dataset(
-                'features',
-                shape = (1, episode_length, n_colloids, n_observables),
-                maxshape=(None, episode_length, n_colloids, n_observables),
-                dtype = np.float32,
-                **dataset_kwargs,
-            )
-            for name in ['actions', 'log_probs', 'rewards']:
+            with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
+                agent_group = h5_outfile.require_group(f"Agent_{self.particle_type}")
+                dataset_kwargs = dict(compression="gzip")
+                
                 agent_group.require_dataset(
-                    name,
-                    shape=(1, episode_length, n_colloids),
-                    maxshape=(None, episode_length, n_colloids),
-                    dtype = int if name == 'actions' else float,
+                    'features',
+                    shape = (1, episode_length, n_colloids, n_observables),
+                    maxshape=(None, episode_length, n_colloids, n_observables),
+                    dtype = np.float32,
                     **dataset_kwargs,
                 )
+                for name in ['actions', 'log_probs', 'rewards']:
+                    agent_group.require_dataset(
+                        name,
+                        shape=(1, episode_length, n_colloids),
+                        maxshape=(None, episode_length, n_colloids),
+                        dtype = int if name == 'actions' else float,
+                        **dataset_kwargs,
+                    )
+        else:
+            self.data_holder = {
+                'features': list(),
+                'actions': list(),
+                'rewards': list(),
+            }
+
+            episode_length = np.array(self.trajectory.features).shape[0]
+            n_colloids = np.array(self.trajectory.features).shape[1]
+            n_observables = np.array(self.trajectory.features).shape[2]
+            with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
+                agent_group = h5_outfile.require_group(f"Agent_{self.particle_type}")
+                dataset_kwargs = dict(compression="gzip")
+                
+                agent_group.require_dataset(
+                    'features',
+                    shape = (1, episode_length, n_colloids, n_observables),
+                    maxshape=(None, episode_length, n_colloids, n_observables),
+                    dtype = np.float32,
+                    **dataset_kwargs,
+                )
+                for name in ['actions', 'rewards']:
+                    agent_group.require_dataset(
+                        name,
+                        shape=(1, episode_length, n_colloids),
+                        maxshape=(None, episode_length, n_colloids),
+                        dtype = int if name == 'actions' else float,
+                        **dataset_kwargs,
+                    )
 
         self.is_stored = True
 
@@ -154,7 +183,7 @@ class ActorCriticAgent(Agent):
         self.h5_time_steps_written = 0
         self.n_saved_files += 1
     
-    def write_to_h5(self):
+    def write_to_h5(self, deployment=False):
         """
         Write the agents data for one episodes to the HDF5 file.
         """
@@ -162,9 +191,9 @@ class ActorCriticAgent(Agent):
 
         self.data_holder['features'].append(self.trajectory.features)
         self.data_holder['actions'].append(self.trajectory.actions)
-        self.data_holder['log_probs'].append(self.trajectory.log_probs)
+        if not deployment:
+            self.data_holder['log_probs'].append(self.trajectory.log_probs)
         self.data_holder['rewards'].append(self.trajectory.rewards)
-
         with h5py.File(self.h5_filename.as_posix(), 'a') as h5_outfile:
             agent_group = h5_outfile[f"Agent_{self.particle_type}"]
 
@@ -224,6 +253,18 @@ class ActorCriticAgent(Agent):
         self.reset_trajectory()
 
         return rewards, killed
+
+    def store_agent_data(self):
+        if self.save_agent_to_file:
+            if not self.is_stored:
+                self.init_h5_output(deployment=True)
+                print('Creating a new agent file.')
+            
+            self.write_to_h5(deployment=True)
+            self.n_written_to_file += 1
+            if self.n_written_to_file >= self.n_saves_per_file:
+                self.is_stored = False
+                self.n_written_to_file = 0
 
     def reset_agent(self, colloids: typing.List[Colloid]):
         """

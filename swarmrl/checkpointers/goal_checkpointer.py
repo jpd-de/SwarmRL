@@ -79,8 +79,9 @@ class GoalCheckpointer(BaseCheckpointer):
                     self.stop_episode = current_episode + self.running_out_length
                 else:
                     self.stop_episode = current_episode
-        print('avg', avg_reward)
-        return avg_reward >= self.required_reward
+        save_checkpoint = avg_reward >= self.required_reward
+        return save_checkpoint
+
 
     def check_for_break(self):
         return self.BREAK_TRAINING

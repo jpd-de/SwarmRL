@@ -64,11 +64,12 @@ class Trainer:
             self.agents[str(agent.particle_type)] = agent
 
         checkpoint_paths = []
-        if len(checkpointers > 0):
+        if len(checkpointers) > 0:
             for checkpointer in checkpointers:
                 self.checkpointers.append(checkpointer)
                 if checkpointer.out_path != None:
                     checkpoint_paths.append(checkpointer.out_path)
+
             if len(checkpoint_paths) == 0:
                 print("You did not set a checkpointer out path. Choosing './Models/' instead.")
                 self.checkpoint_path = "./Models/"

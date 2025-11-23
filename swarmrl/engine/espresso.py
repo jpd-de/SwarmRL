@@ -188,6 +188,7 @@ class EspressoMD(Engine):
             self.h5_group_tag = "colloids"
         else:
             self.h5_group_tag = h5_group_tag
+        self.created_h5_file = False
 
         if system is None:
             self.system = espressomd.System(box_l=3 * [1.0])
@@ -197,6 +198,9 @@ class EspressoMD(Engine):
 
         self.colloids = list()
         self.lbf: espressomd.lb.LBFluidWalberla = None
+        
+        # Helperstuff for the blocking task
+        self.unblocked = False
 
         # register to lookup which type has which radius
         self.colloid_radius_register = {}
@@ -938,59 +942,153 @@ class EspressoMD(Engine):
         return lbf
 
     def add_flowfield(
+    self,
+    flowfield: pint.Quantity,
+    friction_coeff: typing.Union[pint.Quantity, dict],
+    grid_spacings: pint.Quantity,
+    default_friction_coeff: typing.Optional[pint.Quantity] = None,
+    ):
+        """
+        Add a flow field to the system.
+
+        friction_coeff may be:
+        - a single pint.Quantity (scalar) -> a global gamma is used
+        - a dict mapping particle ids (int) -> pint.Quantity -> per-particle gammas
+
+        If `friction_coeff` is a dict and `default_friction_coeff` is provided,
+        that value will be used as the default gamma for particles not listed
+        in the dict. If `default_friction_coeff` is None, the code will use the
+        first value from the dict as default (and emit a warning).
+
+        The function converts quantities to simulation units expected by the
+        underlying bindings (same unit names you used previously).
+        """
+        import warnings
+        import numpy as np
+
+        # thermostat check (keeps original behavior)
+        if not self.params.thermostat_type == "langevin":
+            raise RuntimeError(
+                "Coupling to a flowfield does not work with a Brownian thermostat. Use 'langevin'."
+            )
+
+        flow = flowfield.m_as("sim_velocity")
+        agrids = grid_spacings.m_as("sim_length")
+
+        # Validate shapes
+        if not flow.ndim == 4:
+            raise ValueError("flowfield must have shape (n_cells_x, n_cells_y, n_cells_z, 3)")
+        if not len(grid_spacings) == 3:
+            raise ValueError("Grid spacings must have length of 3")
+
+        # Pad for interpolation (periodic)
+        flow_padded = np.stack(
+            [np.pad(flow[:, :, :, i], mode="wrap", pad_width=1) for i in range(3)],
+            axis=3,
+        )
+
+        # Decide whether to use a single gamma or per-particle gammas
+        if isinstance(friction_coeff, dict):
+            # Validate mapping keys and convert values to sim units
+            particle_scales = {}
+            for pid, val in friction_coeff.items():
+                if not isinstance(pid, int):
+                    raise TypeError("particle id keys in friction_coeff mapping must be ints")
+                # Accept either pint.Quantity or plain float
+                if hasattr(val, "m_as"):
+                    particle_scales[int(pid)] = float(val.m_as("sim_mass/sim_time"))
+                else:
+                    particle_scales[int(pid)] = float(val)
+
+            # Determine default
+            if default_friction_coeff is not None:
+                default_scale = float(default_friction_coeff.m_as("sim_mass/sim_time"))
+            else:
+                # Fallback: use the first provided value as default, warn the user
+                first_val = next(iter(particle_scales.values()))
+                default_scale = float(first_val)
+                warnings.warn(
+                    "No `default_friction_coeff` provided for per-particle "
+                    "friction mapping; using the first provided value as default."
+                    "Ignore if all friction_coeffs are provided in a dictionary."
+                )
+
+            # Pass per-particle mapping. We support both names:
+            # - pass `default_scale` and `particle_scales` directly, or
+            # - pass the convenience `particle_gammas` (Python-side maps to particle_scales).
+            flow_constraint = espressomd.constraints.FlowField(
+                field=flow_padded,
+                grid_spacing=agrids,
+                default_scale=default_scale,
+                particle_scales=particle_scales,
+            )
+        else:
+            # Single scalar gamma (pint.Quantity or plain float)
+            if hasattr(friction_coeff, "m_as"):
+                gamma = float(friction_coeff.m_as("sim_mass/sim_time"))
+            else:
+                gamma = float(friction_coeff)
+
+            flow_constraint = espressomd.constraints.FlowField(
+                field=flow_padded, grid_spacing=agrids, gamma=gamma
+            )
+
+        self.system.constraints.add(flow_constraint)
+
+    def add_force_field(
         self,
-        flowfield: pint.Quantity,
-        friction_coeff: pint.Quantity,
+        forcefield: pint.Quantity,
+        default_scale: pint.Quantity,
+        pint_particle_scales: dict,
         grid_spacings: pint.Quantity,
     ):
         """
         Parameters
         ----------
-        flowfield: pint.Quantity[np.array]
-            The flowfield to add, given as a pint Quantity of a numpy array
+        forcefield: pint.Quantity[np.array]
+            The forcefield to add, given as a pint Quantity of a numpy array
             with units of velocity.
             Must have shape (n_cells_x, n_cells_y, n_cells_z, 3)
             The velocity values must be centered in the corresponding grid,
             e.g. the [idx_x,idx_y,idx_z, :] value of the array contains the velocity at
             np.dot([idx_x+0.5,idx_y+0.5,idx_z+0.5],[agrid_x,agrid_y,agrid_z]).
             From these points, the velocity is interpolated to the particle positions.
-        friction_coeff: pint.Quantity[float]
-            The friction coefficient in units of mass/time.
-            Espresso does not yet support particle-specific or anisotropic
-            friction coefficients for flow coupling, so one scalar value has to be
-            provided here which will be used for all particles.
+        default_scale: pint.Quantity[float]
+            The force scale coefficient. Scaling factor for particles that have no individual scaling factor.
+        pint_particle_scales: dict[particle_id : float]
+            A dictionary mapping particle ids to scaling factors. For these particles, 
+            the interaction is scaled with their individual scaling factor. 
+            Other particles are scaled with the default scaling factor.
         grid_spacings: pint.Quantity[np.array]
-            This grid spacing will be used to fit the flowfield into the simulation box.
+            This grid spacing will be used to fit the forcefield into the simulation box.
             If you run a 2d-simulation, choose grid_spacings[2]=box_l.
         """
 
-        if not self.params.thermostat_type == "langevin":
-            raise RuntimeError(
-                "Coupling to a flowfield does not work with a Brownian thermostat. Use"
-                " 'langevin'."
-            )
-
-        flow = flowfield.m_as("sim_velocity")
-        gamma = friction_coeff.m_as("sim_mass/sim_time")
+        force = forcefield.m_as("sim_velocity")
+        default_scale = default_scale.m_as('sim_force')
+        particle_scales = {}
+        for key in pint_particle_scales:
+            particle_scales[key] = pint_particle_scales[key].m_as("sim_force")
         agrids = grid_spacings.m_as("sim_length")
 
-        if not flow.ndim == 4:
+        if not force.ndim == 4:
             raise ValueError(
-                "flowfield must have shape (n_cells_x, n_cells_y, n_cells_z, 3)"
+                "forcefield must have shape (n_cells_x, n_cells_y, n_cells_z, 3)"
             )
         if not len(grid_spacings) == 3:
             raise ValueError("Grid spacings must have length of 3")
 
         # espresso constraint field must be one grid larger in all directions
         # for interpolation. Apply periodic boundary conditions
-        flow_padded = np.stack(
-            [np.pad(flow[:, :, :, i], mode="wrap", pad_width=1) for i in range(3)],
+        force_padded = np.stack(
+            [np.pad(force[:, :, :, i], mode="wrap", pad_width=1) for i in range(3)],
             axis=3,
         )
-        flow_constraint = espressomd.constraints.FlowField(
-            field=flow_padded, gamma=gamma, grid_spacing=agrids
+        force_constraint = espressomd.constraints.ForceField(
+            field=force_padded, default_scale=default_scale, 
+            grid_spacing=agrids, particle_scales=particle_scales
         )
-        self.system.constraints.add(flow_constraint)
+        self.system.constraints.add(force_constraint)
 
     def add_external_potential(
         self, potential: pint.Quantity, grid_spacings: pint.Quantity
@@ -1070,11 +1168,14 @@ class EspressoMD(Engine):
             "Ids": list(),
             "Types": list(),
             "Unwrapped_Positions": list(),
-            "Velocities": list(),
-            "Directors": list(),
+            # "Velocities": list(),
+            # "Directors": list(),
         }
 
         n_colloids = len(self.colloids)
+        if self.h5_filename.exists() and not self.created_h5_file:
+            self.h5_filename.unlink()
+            self.created_h5_file = True
 
         with h5py.File(self.h5_filename.as_posix(), "a") as h5_outfile:
             part_group = h5_outfile.require_group(self.h5_group_tag)
@@ -1096,7 +1197,7 @@ class EspressoMD(Engine):
                     dtype=int,
                     **dataset_kwargs,
                 )
-            for name in ["Unwrapped_Positions", "Velocities", "Directors"]:
+            for name in ["Unwrapped_Positions"]:#, "Velocities", "Directors"]:
                 part_group.require_dataset(
                     name,
                     shape=(traj_len, n_colloids, 3),
@@ -1106,6 +1207,7 @@ class EspressoMD(Engine):
                 )
         self.write_idx = 0
         self.h5_time_steps_written = 0
+        self.created_h5_file = True
 
     def _update_traj_holder(self):
         if len(self.colloids) == 0:
@@ -1122,12 +1224,12 @@ class EspressoMD(Engine):
         self.traj_holder["Unwrapped_Positions"].append(
             np.stack([c.pos for c in self.colloids], axis=0)
         )
-        self.traj_holder["Velocities"].append(
-            np.stack([c.v for c in self.colloids], axis=0)
-        )
-        self.traj_holder["Directors"].append(
-            np.stack([c.director for c in self.colloids], axis=0)
-        )
+        #self.traj_holder["Velocities"].append(
+        #    np.stack([c.v for c in self.colloids], axis=0)
+        #)
+        #self.traj_holder["Directors"].append(
+        #    np.stack([c.director for c in self.colloids], axis=0)
+        #)
 
     def _write_traj_chunk_to_file(self):
         """
@@ -1336,8 +1438,8 @@ class EspressoMD(Engine):
             "Id": np.array([c.id for c in self.colloids]),
             "Type": np.array([c.type for c in self.colloids]),
             "Unwrapped_Positions": np.stack([c.pos for c in self.colloids]),
-            "Velocities": np.stack([c.v for c in self.colloids]),
-            "Directors": np.stack([c.director for c in self.colloids]),
+            #"Velocities": np.stack([c.v for c in self.colloids]),
+            #"Directors": np.stack([c.director for c in self.colloids]),
         }
 
     def get_unit_system(self):
@@ -1359,10 +1461,85 @@ class EspressoMD(Engine):
         Returns
         -------
         colloid_positions: np.ndarray
-                All colloid positions
+                All colloid positions (n_agents, 3)
         """
         colloid_positions = []
         for colloid in self.colloids:
             if colloid.type == 0:
                 colloid_positions.append(colloid.pos)
         return np.array(colloid_positions)
+
+
+    def add_colloid_bounds(self, epsilon, blocker_id=2, helper_id=3):
+        # Fix helper particles
+        colloid_types = set(colloid.type for colloid in self.colloids)
+        for colloid in self.colloids:
+            if colloid.type == helper_id:
+                colloid.fix = [True, True, True]
+
+        # Setup the interactions between the blocker, helpers, and rest particles
+        self.system.non_bonded_inter[blocker_id, blocker_id].reset()
+
+        for col_type in colloid_types:
+            self.system.non_bonded_inter[col_type, helper_id].reset()
+
+        block_particle_radius = self.colloid_radius_register[blocker_id]['radius']
+        if block_particle_radius != self.colloid_radius_register[helper_id]['radius']:
+            raise ValueError(
+            f"Block particle radius ({block_particle_radius}) does not match helper particle radius ({self.colloid_radius_register[helper_id]['radius']})"
+            )
+        sigma = (block_particle_radius + block_particle_radius)* 2 ** (-1 / 6)
+        self.system.non_bonded_inter[blocker_id, blocker_id].lennard_jones.set_params(
+                    sigma=sigma,
+                    epsilon=epsilon,
+                    cutoff=2.5*sigma,
+                    shift='auto',
+                )
+        self.system.non_bonded_inter[blocker_id,helper_id].lennard_jones.set_params(
+                    sigma=sigma,
+                    epsilon=epsilon,
+                    cutoff=2.5*sigma,
+                    shift='auto',
+                )
+
+    def check_for_broken_blockade(self):
+        blockers = []
+        helpers = []
+        for colloid in self.colloids:
+            if colloid.type == 2:
+                blockers.append(colloid)
+            if colloid.type == 3:
+                helpers.append(colloid)
+        
+        distances = []
+        for blocker in blockers:
+            for helper in helpers:
+                distance = np.linalg.norm(np.array(blocker.pos) - np.array(helper.pos))
+                distances.append(distance)
+        if not self.unblocked:
+            if any(d > 14 for d in distances):
+                print("Probably bond broken")
+                self.unblocked =  not self.unblocked
+                self.system.non_bonded_inter[3, 3].reset()
+                self.system.non_bonded_inter[2, 3].reset()
+                self.system.non_bonded_inter[1, 3].reset()
+                self.system.non_bonded_inter[0, 3].reset()
+        else:
+            if any(d < 14 for d in distances):
+                print("Probably blocked again")
+                self.unblocked = not self.unblocked
+
+        return distances
+
+    def output_forces(self, p_type1=0, p_type2=1):
+        robots = []
+        blood = []
+        for colloid in self.colloids:
+            if colloid.type == p_type1 and len(robots) == 0:
+                robots.append(colloid)
+            elif colloid.type == p_type2 and len(blood) == 0:
+                blood.append(colloid)
+        new = robots[0], blood[0] 
+        for n in new:
+            print(n.pos, n.v, n.f)
+        print('\n')
