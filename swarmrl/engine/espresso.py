@@ -1502,34 +1502,35 @@ class EspressoMD(Engine):
                     shift='auto',
                 )
 
-    def check_for_broken_blockade(self):
-        blockers = []
-        helpers = []
-        for colloid in self.colloids:
-            if colloid.type == 2:
-                blockers.append(colloid)
-            if colloid.type == 3:
-                helpers.append(colloid)
-        
-        distances = []
-        for blocker in blockers:
-            for helper in helpers:
-                distance = np.linalg.norm(np.array(blocker.pos) - np.array(helper.pos))
-                distances.append(distance)
-        if not self.unblocked:
-            if any(d > 14 for d in distances):
-                print("Probably bond broken")
-                self.unblocked =  not self.unblocked
-                self.system.non_bonded_inter[3, 3].reset()
-                self.system.non_bonded_inter[2, 3].reset()
-                self.system.non_bonded_inter[1, 3].reset()
-                self.system.non_bonded_inter[0, 3].reset()
-        else:
-            if any(d < 14 for d in distances):
-                print("Probably blocked again")
-                self.unblocked = not self.unblocked
+    def check_for_broken_blockage(self, n_blockages, threshold_distance):
+        """
+        Checks the distance between blocking particles. 
+        If the distance between neighboring particles is larger than the cutoff from the lj
+        potential, the bond is assumed to be broken.
 
-        return distances
+        Returns an array of booleans with shape (n_blockages).
+        """
+        block_particles_id = [2 * i + 2 for i in range(n_blockages)]
+        helper_particles_id = [2 * i + 3 for i in range(n_blockages)]
+        blocker_positions = []
+        helper_positions = []
+        is_broken = np.zeros((n_blockages))
+
+        for blockage_idx, _ in enumerate(range(n_blockages)):
+            blocking_positions = [p.pos for p in self.system.part.select(type=block_particles_id[blockage_idx])] 
+            helper_positions = [p.pos for p in self.system.part.select(type=helper_particles_id[blockage_idx])] 
+
+            first_helper_positions = np.array(helper_positions[0])
+            second_helper_positions = np.array(helper_positions[1])
+            blocking_positions = np.array( np.array(blocking_positions))
+            all_blocking_positions = np.concatenate([first_helper_positions[np.newaxis,:],  blocking_positions, second_helper_positions[np.newaxis,:]])
+
+            neighbor_distances = np.linalg.norm(all_blocking_positions[1:] - all_blocking_positions[:-1], axis=1)
+            if (neighbor_distances > threshold_distance).any():
+                is_broken[blockage_idx] = True
+            else:
+                is_broken[blockage_idx] = False
+        return is_broken
 
     def output_forces(self, p_type1=0, p_type2=1):
         robots = []
