@@ -12,8 +12,7 @@ from swarmrl.trainers.trainer import Trainer
 if TYPE_CHECKING:
     from espressomd import System
 
-import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class EpisodicTrainer(Trainer):
@@ -114,26 +113,29 @@ class EpisodicTrainer(Trainer):
                 self.engine = get_engine(system, f"{cycle_index}", sim_params)
                 cycle_index += 1
             else:
-                self.engine = get_engine(system, "0", sim_params = sim_params)
-
+                self.engine = get_engine(system, "0", sim_params=sim_params)
 
             for episode in range(n_episodes):
                 # Check if the system should be reset.
                 if episode % reset_frequency == 0 or killed:
                     # Check if the model should be saved.
-                    # TODO: Make this reward depending, if a checkpointing flag is set.
                     if (episode + 1) % save_models_intervall == 0:
-                        self.export_models(f'{sim_params["OUT_DIR"]}/Models/Model-of-cycle-{save_index}.pkl')
+                        self.export_models(
+                            f'{sim_params["OUT_DIR"]}/Models/Model-of-cycle-{save_index}.pkl'
+                        )
                     print(f"Resetting the system at episode {episode}")
-                    # TODO: Idea: Implement way of checking, whether the reward went up or down. Depending on that, save the model or not
-                    if (episode+1) % save_models_intervall == 0:
-                        self.export_models(f"{sim_params['OUT_DIR']}/Models/Models_of_cycle_{save_index}.pkl")
+                    if (episode + 1) % save_models_intervall == 0:
+                        self.export_models(
+                            f"{sim_params['OUT_DIR']}/Models/Models_of_cycle_{save_index}.pkl"
+                        )
                         save_index += save_models_intervall
                     self.engine = None
                     if save_episodic_data:
                         try:
                             # TODO: Check if get_engine should take the sim_params
-                            self.engine = get_engine(system, f"{cycle_index}", sim_params)
+                            self.engine = get_engine(
+                                system, f"{cycle_index}", sim_params
+                            )
                             cycle_index += 1
                         except TypeError:
                             raise ValueError(
@@ -141,7 +143,8 @@ class EpisodicTrainer(Trainer):
                                 " saving. Your get_engine function should take a system"
                                 " and a str(cycle_index) as arguments. The cycle_index"
                                 " is passed to the EsperessoMD engine as"
-                                " 'h5_group_tag'." # TODO: Add comment about sim_params dict
+                                " 'h5_group_tag'."
+                                # TODO: Add comment about sim_params dict
                             )
                     else:
                         self.engine = get_engine(system)
@@ -150,17 +153,13 @@ class EpisodicTrainer(Trainer):
                     for agent in self.agents.values():
                         agent.reset_agent(self.engine.colloids)
 
-
-
-
-
                 self.engine.integrate(episode_length, force_fn)
 
                 force_fn, current_reward, killed = self.update_rl()
 
                 # Add a moving source - for testing purposes
-                #self.agents['0'].task.change_source()
-                #self.agents['0'].observable.change_source()
+                # self.agents['0'].task.change_source()
+                # self.agents['0'].observable.change_source()
                 rewards.append(current_reward)
                 logger.debug(f"{episode=}")
                 logger.debug(f"{current_reward=}")
