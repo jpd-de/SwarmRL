@@ -2,7 +2,6 @@
 Class for the species search task.
 """
 
-import logging
 from typing import List
 
 import jax
@@ -11,8 +10,6 @@ import numpy as onp
 
 from swarmrl.components.colloid import Colloid
 from swarmrl.tasks.task import Task
-
-logger = logging.getLogger(__name__)
 
 
 class SpeciesSearch(Task):
@@ -83,9 +80,9 @@ class SpeciesSearch(Task):
             indices.append(colloids[index].id)
             positions.append(colloids[index].pos)
 
-        test_points = np.array(
-            [colloid.pos for colloid in colloids if colloid.type == self.sensing_type]
-        )
+        test_points = np.array([
+            colloid.pos for colloid in colloids if colloid.type == self.sensing_type
+        ])
 
         out_indices, _, field_values = self.task_fn(
             np.array(indices), np.array(positions), test_points, historic_values
@@ -162,9 +159,9 @@ class SpeciesSearch(Task):
             positions.append(colloids[index].pos)
             historic_values.append(self.historical_field[str(colloids[index].id)])
 
-        test_points = np.array(
-            [colloid.pos for colloid in colloids if colloid.type == self.sensing_type]
-        )
+        test_points = np.array([
+            colloid.pos for colloid in colloids if colloid.type == self.sensing_type
+        ])
 
         out_indices, delta_values, field_values = self.task_fn(
             np.array(indices),

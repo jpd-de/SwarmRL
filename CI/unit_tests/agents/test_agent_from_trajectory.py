@@ -20,9 +20,13 @@ class TestAgentFromTrajectory(ut.TestCase):
             params=[1, 1, 0],
         )
 
-        self.trajectory = np.array(
-            [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]
-        )
+        self.trajectory = np.array([
+            [0, 0, 0],
+            [1, 0, 0],
+            [2, 0, 0],
+            [3, 0, 0],
+            [4, 0, 0],
+        ])
         self.agent_trajectory = AgentFromTrajectory(
             trajectory=self.trajectory,
             time_slice=0.01,
@@ -42,8 +46,9 @@ class TestAgentFromTrajectory(ut.TestCase):
             pos=np.array([1.0, 0, 0]), director=np.array([1, 0, 0]), id=2, type=0
         )
         actions = self.agent_force_function.calc_action([coll0, coll1])
+
+        assert len(actions) == 1
         self.assertGreater(actions[0].force, 0)
-        self.assertEqual(actions[1].force, 0)
 
     def test_force_trajectory(self):
         coll0 = Colloid(
@@ -53,8 +58,8 @@ class TestAgentFromTrajectory(ut.TestCase):
             pos=np.array([1.0, 0, 0]), director=np.array([1, 0, 0]), id=2, type=0
         )
         actions = self.agent_trajectory.calc_action([coll0, coll1])
+        assert len(actions) == 1
         self.assertGreater(actions[0].force, 1)
-        self.assertEqual(actions[1].force, 0)
 
 
 if __name__ == "__main__":

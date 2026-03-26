@@ -2,7 +2,6 @@
 Observable for particle sensing.
 """
 
-import logging
 from typing import List
 
 import jax
@@ -11,8 +10,6 @@ import numpy as onp
 
 from swarmrl.components.colloid import Colloid
 from swarmrl.observables.observable import Observable
-
-logger = logging.getLogger(__name__)
 
 
 class ParticleSensing(Observable):
@@ -81,9 +78,9 @@ class ParticleSensing(Observable):
             indices.append(colloids[index].id)
             positions.append(colloids[index].pos)
 
-        sensed_colloids = np.array(
-            [colloid.pos for colloid in colloids if colloid.type == self.sensing_type]
-        )
+        sensed_colloids = np.array([
+            colloid.pos for colloid in colloids if colloid.type == self.sensing_type
+        ])
 
         out_indices, _, field_values = self.observable_fn(
             np.array(indices), np.array(positions), sensed_colloids, historic_values
@@ -161,9 +158,9 @@ class ParticleSensing(Observable):
             positions.append(colloids[index].pos)
             historic_values.append(self.historical_field[str(colloids[index].id)])
 
-        test_points = np.array(
-            [colloid.pos for colloid in colloids if colloid.type == self.sensing_type]
-        )
+        test_points = np.array([
+            colloid.pos for colloid in colloids if colloid.type == self.sensing_type
+        ])
 
         out_indices, delta_values, field_values = self.observable_fn(
             np.array(indices),

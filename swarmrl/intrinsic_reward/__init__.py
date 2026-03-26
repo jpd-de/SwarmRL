@@ -2,12 +2,9 @@
 Package intrinsic_rewards for Agents.
 """
 
-import logging
+from loguru import logger
 
-logger = logging.getLogger(__name__)
-
-
-from swarmrl.intrinsic_reward.intrinsic_reward import IntrinsicReward
+from swarmrl.intrinsic_reward.intrinsic_reward import IntrinsicReward  # noqa: E402
 
 try:
     from swarmrl.intrinsic_reward.random_network_distillation import RNDReward

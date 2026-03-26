@@ -3,13 +3,13 @@ Module for the espressoMD simulations.
 """
 
 import dataclasses
-import logging
 import pathlib
 import typing
 
 import h5py
 import numpy as np
 import pint
+from loguru import logger
 
 import swarmrl.utils.utils as utils
 from swarmrl.components.colloid import Colloid
@@ -17,7 +17,6 @@ from swarmrl.force_functions import ForceFunction
 
 from .engine import Engine
 
-logger = logging.getLogger(__name__)
 try:
     import espressomd
     import espressomd.constraints
@@ -204,9 +203,11 @@ class EspressoMD(Engine):
         # after the first call to integrate, no more changes to the engine are allowed
         self.integration_initialised = False
 
-        espressomd.assert_features(
-            ["ROTATION", "EXTERNAL_FORCES", "THERMOSTAT_PER_PARTICLE"]
-        )
+        espressomd.assert_features([
+            "ROTATION",
+            "EXTERNAL_FORCES",
+            "THERMOSTAT_PER_PARTICLE",
+        ])
 
     def _init_unit_system(self):
         """
@@ -450,9 +451,9 @@ class EspressoMD(Engine):
 
         self.colloids.append(colloid)
 
-        self.colloid_radius_register.update(
-            {type_colloid: {"radius": radius_simunits, "aspect_ratio": aspect_ratio}}
-        )
+        self.colloid_radius_register.update({
+            type_colloid: {"radius": radius_simunits, "aspect_ratio": aspect_ratio}
+        })
 
         return colloid
 
@@ -659,9 +660,9 @@ class EspressoMD(Engine):
             virtual_partcl.vs_auto_relate_to(center_part)
             self.colloids.append(virtual_partcl)
 
-        self.colloid_radius_register.update(
-            {rod_particle_type: {"radius": partcl_radius, "aspect_ratio": 1.0}}
-        )
+        self.colloid_radius_register.update({
+            rod_particle_type: {"radius": partcl_radius, "aspect_ratio": 1.0}
+        })
         return center_part
 
     def add_confining_walls(self, wall_type: int):
@@ -706,9 +707,9 @@ class EspressoMD(Engine):
             self.system.constraints.add(constr)
 
         # the wall itself has no radius, only the particle radius counts
-        self.colloid_radius_register.update(
-            {wall_type: {"radius": 0.0, "aspect_ratio": 1.0}}
-        )
+        self.colloid_radius_register.update({
+            wall_type: {"radius": 0.0, "aspect_ratio": 1.0}
+        })
 
     def add_walls(
         self,
@@ -795,9 +796,9 @@ class EspressoMD(Engine):
             self.system.constraints.add(constr)
 
         # the wall itself has no radius, only the particle radius counts
-        self.colloid_radius_register.update(
-            {wall_type: {"radius": 0.0, "aspect_ratio": 1.0}}
-        )
+        self.colloid_radius_register.update({
+            wall_type: {"radius": 0.0, "aspect_ratio": 1.0}
+        })
 
     def _setup_interactions(self):
         aspect_ratios = [
@@ -1076,7 +1077,7 @@ class EspressoMD(Engine):
 
         n_colloids = len(self.colloids)
 
-        with h5py.File(self.h5_filename.as_posix(), "a") as h5_outfile:
+        with h5py.File(self.h5_filename.as_posix(), "a", libver="latest") as h5_outfile:
             part_group = h5_outfile.require_group(self.h5_group_tag)
             dataset_kwargs = dict(compression="gzip")
             traj_len = self.write_chunk_size
@@ -1164,7 +1165,7 @@ class EspressoMD(Engine):
             f_max=0.0, gamma=0.1, max_displacement=0.1
         )
         time = self.system.time
-        self.system.integrator.run(1000) # TODO: Change this for a longer warmup
+        self.system.integrator.run(1000)  # TODO: Change this for a longer warmup
         self.system.time = time
 
         # set the thermostat
