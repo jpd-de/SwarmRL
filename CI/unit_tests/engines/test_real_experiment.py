@@ -144,20 +144,16 @@ class TestRealExperiment(ut.TestCase):
         runner.finalize()
 
     def test_reward_collection_uses_subsequent_observation(self):
-        first_batch = np.array(
-            [
-                [10.0, 1.0, 0.0, 0.0],
-                [11.0, 2.0, 0.5, 1.0],
-                [12.0, 3.0, 1.0, 2.0],
-            ]
-        )
-        second_batch = np.array(
-            [
-                [20.0, 4.0, 0.1, 0.0],
-                [21.0, 5.0, 0.6, 1.0],
-                [22.0, 6.0, 1.1, 2.0],
-            ]
-        )
+        first_batch = np.array([
+            [10.0, 1.0, 0.0, 0.0],
+            [11.0, 2.0, 0.5, 1.0],
+            [12.0, 3.0, 1.0, 2.0],
+        ])
+        second_batch = np.array([
+            [20.0, 4.0, 0.1, 0.0],
+            [21.0, 5.0, 0.6, 1.0],
+            [22.0, 6.0, 1.1, 2.0],
+        ])
         connection = SequencedMockConnection([first_batch, second_batch])
         runner = swarmrl.engine.real_experiment.RealExperiment(connection)
         agent = TrackingAgent(connection=connection)

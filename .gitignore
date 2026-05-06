@@ -167,3 +167,7 @@ mdsuite/cython_extensions/*.c
 *.npy
 *.pymon
 *.__pycache__/
+
+# superpowers
+/docs/superpowers/*
+/docs/plans/

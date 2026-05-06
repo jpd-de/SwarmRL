@@ -158,7 +158,7 @@ class ActorCriticAgent(Agent):
 
     def calc_action(self, colloids: typing.List[Colloid]) -> typing.List[Action]:
         """
-        Copmute the new state for the agent.
+        Compute the new state for the agent.
 
         Returns the chosen actions to the force function which
         talks to the espresso engine.
