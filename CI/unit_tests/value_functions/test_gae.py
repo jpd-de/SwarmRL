@@ -10,6 +10,9 @@ class TestGAE:
         rewards = np.array([1, 1, 1, 1, 1])
         values = np.array([1, 2, 3, 4, 5])
 
+        # The final step is intentionally left unbootstrapped in the current
+        # GAE formulation; the returns below are still computed as advantage +
+        # value.
         expected_advantages = np.array([4, 2, 0, -2, -4])
 
         expected_returns = expected_advantages + values

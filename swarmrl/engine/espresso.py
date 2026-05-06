@@ -1301,10 +1301,13 @@ class EspressoMD(Engine):
                 self.params.steps_per_slice * self.slice_idx - self.step_idx
             )
             steps_to_next = min(steps_to_next_write, steps_to_next_slice)
+            completed_slice = steps_to_next == steps_to_next_slice
 
             self.system.integrator.run(
                 steps_to_next, reuse_forces=True, recalc_forces=False
             )
+            if force_model is not None and completed_slice:
+                force_model.calc_reward(self.colloids)
             self.step_idx += steps_to_next
 
     def finalize(self):

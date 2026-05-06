@@ -70,6 +70,8 @@ class TestProximalPolicyLoss:
         # all log_probs are 3 such that the ratio is e^-2 < 1 - epsilon
         old_log_probs_2 = 3 * np.ones((n_time_steps, n_particles))
 
+        # Each reward is consumed at the matching action/state index; no reward
+        # shifting is applied in this fixture.
         # all advantages are 1
         rewards = np.ones((n_time_steps, n_particles))
         # all advantages are -1

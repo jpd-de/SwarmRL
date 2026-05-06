@@ -185,6 +185,7 @@ class RealExperiment(swarmrl.engine.engine.Engine):
         -----
         Can we always refer to real time as discreet? I like it.
         """
+        reward_pending = False
         for _ in range(n_slices):
             try:
                 colloids = self.receive_colloids()
@@ -193,5 +194,19 @@ class RealExperiment(swarmrl.engine.engine.Engine):
                 self.connection.close()
                 break
 
+            if reward_pending and force_model is not None:
+                force_model.calc_reward(colloids)
+                reward_pending = False
+
             actions = self.get_actions(colloids, force_model)
             self.send_actions(actions)
+            if force_model is not None:
+                reward_pending = True
+
+        if reward_pending and force_model is not None:
+            try:
+                colloids = self.receive_colloids()
+            except ConnectionClosedError:
+                self.connection.close()
+            else:
+                force_model.calc_reward(colloids)

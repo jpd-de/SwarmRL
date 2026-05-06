@@ -10,6 +10,7 @@ from numpy.testing import assert_array_almost_equal
 import swarmrl as srl
 from swarmrl.actions import Action
 from swarmrl.agents import ActorCriticAgent
+from swarmrl.agents.agent import Agent
 from swarmrl.components import Colloid
 from swarmrl.force_functions import ForceFunction
 from swarmrl.networks.flax_network import FlaxModel
@@ -68,6 +69,26 @@ class SecondDummyTask(srl.tasks.Task):
         Dummy call method.
         """
         return [5.0 for item in data if item.type == 1]
+
+
+class PositionRewardTask(srl.tasks.Task):
+    """
+    Reward based on the colloid x-position.
+    """
+
+    def __call__(self, data):
+        """
+        Return the x-position for particle type 0 colloids.
+        """
+        return [item.pos[0] for item in data if item.type == 0]
+
+
+class RewardRaisingAgent(Agent):
+    def calc_action(self, colloids):
+        return [Action() for _ in colloids]
+
+    def calc_reward(self, colloids, external_reward=0.0):
+        raise NotImplementedError("real implementation failure")
 
 
 class TestForceFunction:
@@ -164,6 +185,7 @@ class TestForceFunction:
         actions = self.multi_interaction.calc_action(
             [colloid_1, colloid_2, colloid_3],
         )
+        self.multi_interaction.calc_reward([colloid_1, colloid_2, colloid_3])
 
         # Check that the second action is correct
         actions[1].force == 0.0
@@ -172,6 +194,15 @@ class TestForceFunction:
         # Check reward data
         loaded_data_0 = self.multi_interaction.agents["0"].trajectory
         loaded_data_2 = self.multi_interaction.agents["2"].trajectory
+
+        assert len(loaded_data_0.features) == 1
+        assert len(loaded_data_0.actions) == 1
+        assert len(loaded_data_0.log_probs) == 1
+        assert len(loaded_data_0.rewards) == 1
+        assert len(loaded_data_2.features) == 1
+        assert len(loaded_data_2.actions) == 1
+        assert len(loaded_data_2.log_probs) == 1
+        assert len(loaded_data_2.rewards) == 1
 
         loaded_data_0 = loaded_data_0.rewards[0][0]
         loaded_data_2 = loaded_data_2.rewards[0][0]
@@ -242,3 +273,69 @@ class TestForceFunction:
 
         # Colloid 3
         assert_array_almost_equal(data[1][2], colloid_3.pos / 1000.0)
+
+    def test_reward_is_not_recorded_during_calc_action(self):
+        """
+        Reward collection should happen after action selection.
+        """
+        colloid = Colloid(
+            np.array([3.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            0,
+            np.array([0.0, 0.0, 0.0]),
+            0,
+        )
+        observable = srl.observables.PositionObservable(
+            box_length=np.array([1000, 1000, 1000])
+        )
+        network = FlaxModel(
+            flax_model=FlaxNet(),
+            input_shape=(3,),
+            optimizer=optax.sgd(0.001),
+            rng_key=6862168,
+            exploration_policy=srl.exploration_policies.RandomExploration(
+                probability=0.0
+            ),
+            sampling_strategy=CategoricalDistribution(),
+        )
+        agent = ActorCriticAgent(
+            particle_type=0,
+            network=network,
+            actions=self.action_space,
+            task=PositionRewardTask(),
+            observable=observable,
+        )
+        interaction = ForceFunction(agents={"0": agent})
+
+        interaction.calc_action([colloid])
+
+        assert len(agent.trajectory.features) == 1
+        assert len(agent.trajectory.actions) == 1
+        assert len(agent.trajectory.log_probs) == 1
+        assert agent.trajectory.rewards == []
+
+        interaction.calc_reward([colloid])
+
+        assert len(agent.trajectory.rewards) == 1
+        assert agent.trajectory.rewards[0][0] == 3.0
+
+    def test_calc_reward_does_not_swallow_real_implementation_errors(self):
+        """
+        Real agent reward errors should propagate instead of being treated as
+        capability detection.
+        """
+        colloid = Colloid(
+            np.array([3.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            0,
+            np.array([0.0, 0.0, 0.0]),
+            0,
+        )
+        interaction = ForceFunction(agents={"0": RewardRaisingAgent()})
+
+        try:
+            interaction.calc_reward([colloid])
+        except NotImplementedError as exc:
+            assert "real implementation failure" in str(exc)
+        else:
+            raise AssertionError("Expected NotImplementedError to be raised")

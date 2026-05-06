@@ -7,6 +7,7 @@ import typing
 import numpy as np
 
 from swarmrl.actions.actions import Action
+from swarmrl.agents.agent import Agent
 from swarmrl.components.colloid import Colloid
 
 
@@ -84,3 +85,19 @@ class ForceFunction:
         self.kill_switch = any(switches)
 
         return list(actions.values())
+
+    def calc_reward(
+        self, colloids: typing.List[Colloid], external_reward: float = 0.0
+    ) -> None:
+        """
+        Forward reward collection to agents that implement it.
+        """
+        switches = []
+        for agent in self.agents:
+            if type(self.agents[agent]).calc_reward is not Agent.calc_reward:
+                self.agents[agent].calc_reward(
+                    colloids=colloids, external_reward=external_reward
+                )
+            switches.append(self.agents[agent].kill_switch)
+
+        self.kill_switch = any(switches)
