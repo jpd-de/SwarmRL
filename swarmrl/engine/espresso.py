@@ -305,6 +305,99 @@ class EspressoMD(Engine):
                 "after the first call to integrate()"
             )
 
+    def _add_rigid_structure(
+        self,
+        center_pos: np.ndarray,
+        center_angle: float,
+        length: float,
+        thickness: float,
+        particle_type: int,
+        friction_trans: float,
+        friction_rot: float,
+        fixed: bool,
+        n_particles: int,
+        director_angles: list,
+        structure_name: str = "structure",
+    ):
+        """
+        Internal helper to add a rigid structure (rod or cross) with virtual particles.
+
+        Parameters
+        ----------
+        center_pos : np.ndarray
+            Position of center particle in simulation units
+        center_angle : float
+            Rotation angle of center particle
+        length : float
+            Length of structure in simulation units
+        thickness : float
+            Thickness of structure in simulation units
+        particle_type : int
+            Particle type for all structure particles
+        friction_trans : float
+            Translational friction in simulation units
+        friction_rot : float
+            Rotational friction in simulation units
+        fixed : bool
+            Whether center particle is fixed
+        n_particles : int
+            Number of particles along each arm
+        director_angles : list
+            List of (theta, phi) tuples for each arm direction
+        structure_name : str
+            Name of structure for warning messages
+
+        Returns
+        -------
+        center_part : espressomd particle
+            The center particle handle
+        """
+        # Place the central particle
+        center_part = self.system.part.add(
+            pos=center_pos,
+            quat=[1, 0, 0, 0],
+            rotation=3 * [True],
+            fix=[fixed, fixed, True],
+            gamma=friction_trans,
+            gamma_rot=friction_rot,
+            type=particle_type,
+        )
+        self._rotate_colloid_to_2d(center_part, center_angle)
+        self.colloids.append(center_part)
+
+        # Place virtual particles
+        espressomd.assert_features(["VIRTUAL_SITES_RELATIVE"])
+        partcl_radius = thickness / 2
+        point_span = length - 2 * partcl_radius
+        point_dist = point_span / (n_particles - 1)
+
+        if point_dist > 2 * partcl_radius:
+            logger.warning(
+                f"your {structure_name} has holes. "
+                f"Particle radius {partcl_radius} "
+                f"particle_distance {point_dist} "
+                "(both in simulation units)"
+            )
+
+        # Place particles along each director
+        for theta, phi in director_angles:
+            director = utils.vector_from_angles(theta, phi)
+            for k in range(n_particles - 1):
+                dist_to_center = (-1) ** k * (k // 2 + 1) * point_dist
+                pos_virt = center_pos + dist_to_center * director
+                virtual_partcl = self.system.part.add(
+                    pos=pos_virt, director=director, virtual=True, type=particle_type
+                )
+                virtual_partcl.vs_auto_relate_to(center_part)
+                self.colloids.append(virtual_partcl)
+
+        # Register particle
+        self.colloid_radius_register.update({
+            particle_type: {"radius": partcl_radius, "aspect_ratio": 1.0}
+        })
+
+        return center_part
+
     def add_colloid_on_point(
         self,
         radius_colloid: pint.Quantity = None,
@@ -601,10 +694,8 @@ class EspressoMD(Engine):
             rod_start_angle = 0
         if n_particles is None:
             n_particles = 101
-        if friction_trans is None and not fixed:
-            raise ValueError(
-                "If you want the rod to move, you must provide a friction coefficient"
-            )
+        if friction_trans is None:
+            raise ValueError("You must provide a friction coefficient for the rod")
         if friction_rot is None:
             raise ValueError("You must provide a rotational friction coefficient")
         if rod_particle_type is None:
@@ -622,47 +713,137 @@ class EspressoMD(Engine):
         fric_rot = friction_rot.m_as(
             "sim_force * sim_length *  sim_time"
         )  # [M / omega]
-        partcl_radius = rod_thickness.m_as("sim_length") / 2
+        length = rod_length.m_as("sim_length")
+        thickness = rod_thickness.m_as("sim_length")
 
-        # place the real particle
-        center_part = self.system.part.add(
-            pos=center_pos,
-            quat=[1, 0, 0, 0],
-            rotation=3 * [True],
-            fix=[fixed, fixed, True],
-            gamma=fric_trans,
-            gamma_rot=fric_rot,
-            type=rod_particle_type,
+        # Rod has a single director along the specified angle
+        director_angles = [(np.pi / 2, rod_start_angle)]
+
+        center_part = self._add_rigid_structure(
+            center_pos=center_pos,
+            center_angle=rod_start_angle,
+            length=length,
+            thickness=thickness,
+            particle_type=rod_particle_type,
+            friction_trans=fric_trans,
+            friction_rot=fric_rot,
+            fixed=fixed,
+            n_particles=n_particles,
+            director_angles=director_angles,
+            structure_name="rod",
         )
-        self._rotate_colloid_to_2d(center_part, rod_start_angle)
-        self.colloids.append(center_part)
+        return center_part
 
-        # place virtual
-        espressomd.assert_features(["VIRTUAL_SITES_RELATIVE"])
-        point_span = rod_length.m_as("sim_length") - 2 * partcl_radius
-        point_dist = point_span / (n_particles - 1)
-        if point_dist > 2 * partcl_radius:
-            logger.warning(
-                "your rod has holes. "
-                f"Particle radius {partcl_radius} "
-                f"particle_distance {point_dist} "
-                "(both in simulation units)"
+    def add_cross(
+        self,
+        cross_center: pint.Quantity = None,
+        cross_length: pint.Quantity = None,
+        cross_thickness: pint.Quantity = None,
+        cross_start_angle: float = None,
+        n_particles: int = None,
+        friction_trans: pint.Quantity = None,
+        friction_rot: pint.Quantity = None,
+        cross_particle_type: int = None,
+        fixed: bool = True,
+    ):
+        """
+        Add a cross to the system.
+        A cross consists of n_particles particles that are rigidly connected
+        and rotate/move as a whole
+        Parameters
+        ----------
+        cross_center
+            default: center of the cross
+        cross_length
+            default: 100 micrometer
+        cross_thickness
+            default: 5 micrometer
+            Make sure there are enough particles.
+            If the thickness is too thin, the cross might get holes
+        cross_start_angle
+            default: 0
+        n_particles
+            default: 101
+            Must be uneven number such that there always is a central particle
+        friction_trans
+            Irrelevant if fixed==True
+            must be provided
+        friction_rot
+            must be provided
+        cross_particle_type
+            The cross is made out of points so they get their own type.
+        fixed
+            Fixes the central particle of the cross.
+
+        Returns
+        -------
+        The espresso handle to the central particle. For debugging purposes only
+        """
+        self._check_already_initialised()
+
+        if cross_center is None:
+            cross_center = self.params.box_length / 2.0
+        if cross_length is None:
+            cross_length = self.ureg.Quantity(100, "micrometer")
+        if cross_thickness is None:
+            cross_thickness = self.ureg.Quantity(5, "micrometer")
+        if cross_start_angle is None:
+            cross_start_angle = 0
+        if n_particles is None:
+            n_particles = 101
+        if friction_trans is None:
+            raise ValueError("You must provide a friction coefficient for the cross")
+        if friction_rot is None:
+            raise ValueError("You must provide a rotational friction coefficient")
+        if cross_particle_type is None:
+            raise ValueError("You must provide a particle type for the cross")
+        if self.n_dims != 2:
+            raise ValueError("cross can only be added in 2d")
+        if cross_center[2].magnitude != 0:
+            raise ValueError(
+                f"cross center z-component must be 0. You gave {cross_center}"
             )
+        if n_particles % 2 != 1:
+            raise ValueError(f"n_particles must be uneven. You gave {n_particles}")
 
-        director = utils.vector_from_angles(np.pi / 2, rod_start_angle)
+        def create_orthonormal_vector(vec):
+            """
+            Creates a vector orthonormal to the given one. Notice, that the third
+            dimension should always be 0.
+            This doesn't test for zero vectors, because it is only an inner function.
+            """
+            z_vector = np.array([0, 0, 1])
+            orthonormal_vector = np.cross(vec, z_vector)
+            return orthonormal_vector / np.linalg.norm(orthonormal_vector)
 
-        for k in range(n_particles - 1):
-            dist_to_center = (-1) ** k * (k // 2 + 1) * point_dist
-            pos_virt = center_pos + dist_to_center * director
-            virtual_partcl = self.system.part.add(
-                pos=pos_virt, director=director, virtual=True, type=rod_particle_type
-            )
-            virtual_partcl.vs_auto_relate_to(center_part)
-            self.colloids.append(virtual_partcl)
+        center_pos = cross_center.m_as("sim_length")
+        fric_trans = friction_trans.m_as("sim_force/sim_velocity")  # [F / v]
+        fric_rot = friction_rot.m_as(
+            "sim_force * sim_length *  sim_time"
+        )  # [M / omega]
+        length = cross_length.m_as("sim_length")
+        thickness = cross_thickness.m_as("sim_length")
 
-        self.colloid_radius_register.update({
-            rod_particle_type: {"radius": partcl_radius, "aspect_ratio": 1.0}
-        })
+        # Cross has two orthogonal directors
+        director1 = utils.vector_from_angles(np.pi / 2, cross_start_angle)
+        director2 = create_orthonormal_vector(director1)
+        theta1, phi1 = utils.angles_from_vector(director1)
+        theta2, phi2 = utils.angles_from_vector(director2)
+        director_angles = [(theta1, phi1), (theta2, phi2)]
+
+        center_part = self._add_rigid_structure(
+            center_pos=center_pos,
+            center_angle=cross_start_angle,
+            length=length,
+            thickness=thickness,
+            particle_type=cross_particle_type,
+            friction_trans=fric_trans,
+            friction_rot=fric_rot,
+            fixed=fixed,
+            n_particles=n_particles,
+            director_angles=director_angles,
+            structure_name="cross",
+        )
         return center_part
 
     def add_confining_walls(self, wall_type: int):
