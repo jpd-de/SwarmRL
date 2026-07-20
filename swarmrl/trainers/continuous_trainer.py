@@ -107,6 +107,13 @@ class ContinuousTrainer(Trainer):
                 running_reward = np.round(
                     np.mean(rewards[running_start : episode + 1]), 2
                 )
+                self._log_episode_metrics(
+                    episode=episode + 1,
+                    current_reward=current_reward,
+                    running_reward=running_reward,
+                    total_reward=float(np.mean(rewards[:completed_episodes])),
+                    killed=killed,
+                )
                 progress.update(
                     task,
                     advance=1,

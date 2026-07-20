@@ -186,6 +186,12 @@ class UniversalTrainer(Trainer):
                 )
 
                 run_rew = np.round(np.mean(rewards_history[-10:]), 2)
+                self._log_episode_metrics(
+                    episode=episode + 1,
+                    current_reward=current_reward,
+                    running_reward=run_rew,
+                    killed=killed,
+                )
                 progress.update(
                     task,
                     advance=1,

@@ -136,12 +136,6 @@ class EpisodicTrainer(Trainer):
 
                 force_fn, current_reward, killed = self.update_rl()
 
-                rewards[episode] = current_reward
-                self.maybe_save_checkpoint(rewards, episode, current_reward)
-
-                logger.debug(f"{episode=}")
-                logger.debug(f"{current_reward=}")
-
                 display_episode = episode + 1
                 if display_episode < 10:
                     running_reward = np.round(np.mean(rewards[:display_episode]), 2)
@@ -149,6 +143,19 @@ class EpisodicTrainer(Trainer):
                     running_reward = np.round(
                         np.mean(rewards[display_episode - 10 : display_episode]), 2
                     )
+
+                rewards[episode] = current_reward
+                self._log_episode_metrics(
+                    episode=episode + 1,
+                    current_reward=current_reward,
+                    running_reward=running_reward,
+                    total_reward=float(np.mean(rewards[:display_episode])),
+                    killed=killed,
+                )
+                self.maybe_save_checkpoint(rewards, episode, current_reward)
+
+                logger.debug(f"{episode=}")
+                logger.debug(f"{current_reward=}")
 
                 progress.update(
                     task,

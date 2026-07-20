@@ -30,7 +30,7 @@ class SACAgent(Agent):
     Continuous-control SAC agent using a single FlaxModel-managed module.
     Handles off-policy transition storage and JAX-native RNG splitting.
 
-    Each particle experience is stored as an individual replay-buffer transition.
+    Each agent instance experience is stored as an individual replay-buffer transition.
 
     The provided FlaxModel must wrap a user-defined Flax module that exposes
     explicit `actor(...)`, `critic(...)`, and `alpha()` methods, because SAC
@@ -55,6 +55,7 @@ class SACAgent(Agent):
         seed: int = 42,
         storage_config: AgentStorageConfig | None = None,
         transition_storage_config: TransitionStorageConfig | None = None,
+        training_metrics_enabled: bool = False,
     ):
         """
         Constructor for the soft-actor-critic protocol.
@@ -105,6 +106,7 @@ class SACAgent(Agent):
         self.learning_starts = learning_starts
         self.gradient_steps = gradient_steps
         self.train = train
+        self.training_metrics_enabled = bool(training_metrics_enabled)
 
         self.transition_storage_config = transition_storage_config
         self.trajectory_storage = None
@@ -136,6 +138,7 @@ class SACAgent(Agent):
         self._pending_action = None
         self._last_reward = 0.0
         self._learning_starts_logged = False
+        self._reset_episode_metrics()
 
         self._validate_sac_network_contract()
         if "critic" not in self.network.target_params:
@@ -169,11 +172,106 @@ class SACAgent(Agent):
         self._pending_observation = None
         self._pending_action = None
         self.kill_switch = False
+        self._reset_episode_metrics()
+
+    def _reset_episode_metrics(self):
+        if not self.training_metrics_enabled:
+            return
+        self._episode_action_count = 0
+        self._episode_action_sum = 0.0
+        self._episode_action_sumsq = 0.0
+        self._episode_action_min = None
+        self._episode_action_max = None
+        self._episode_action_lower_hits = 0
+        self._episode_action_upper_hits = 0
+        self._episode_update_count = 0
+        self._last_update_metrics = {
+            "critic_loss": None,
+            "actor_loss": None,
+            "temperature_loss": None,
+            "alpha": None,
+            "q1_mean": None,
+        }
+
+    def _update_action_metrics(self, action_np: np.ndarray) -> None:
+        if not self.training_metrics_enabled:
+            return
+        flat_actions = np.asarray(action_np, dtype=float).ravel()
+        if flat_actions.size == 0:
+            return
+
+        self._episode_action_count += int(flat_actions.size)
+        self._episode_action_sum += float(np.sum(flat_actions))
+        self._episode_action_sumsq += float(np.sum(flat_actions**2))
+        current_min = float(np.min(flat_actions))
+        current_max = float(np.max(flat_actions))
+        self._episode_action_min = (
+            current_min
+            if self._episode_action_min is None
+            else min(self._episode_action_min, current_min)
+        )
+        self._episode_action_max = (
+            current_max
+            if self._episode_action_max is None
+            else max(self._episode_action_max, current_max)
+        )
+
+        action_limits = getattr(self.sampling_strategy, "action_limits", None)
+        if action_limits is not None:
+            action_limits = np.asarray(action_limits, dtype=float)
+            low = action_limits[:, 0]
+            high = action_limits[:, 1]
+            action_array = np.asarray(action_np, dtype=float)
+            tolerance = 1e-6
+            self._episode_action_lower_hits += int(
+                np.sum(action_array <= (low + tolerance))
+            )
+            self._episode_action_upper_hits += int(
+                np.sum(action_array >= (high - tolerance))
+            )
+
+    def consume_episode_metrics(self) -> dict[str, float | int | None]:
+        """Return and reset the lightweight episode metrics collected so far."""
+        if not self.training_metrics_enabled:
+            return {}
+        if self._episode_action_count > 0:
+            action_mean = self._episode_action_sum / self._episode_action_count
+            action_var = max(
+                self._episode_action_sumsq / self._episode_action_count
+                - action_mean**2,
+                0.0,
+            )
+            action_std = float(np.sqrt(action_var))
+        else:
+            action_mean = None
+            action_std = None
+
+        metrics: dict[str, float | int | None] = {
+            "action_count": int(self._episode_action_count),
+            "action_mean": None if action_mean is None else float(action_mean),
+            "action_std": action_std,
+            "action_min": self._episode_action_min,
+            "action_max": self._episode_action_max,
+            "action_lower_bound_fraction": (
+                None
+                if self._episode_action_count == 0
+                else float(self._episode_action_lower_hits / self._episode_action_count)
+            ),
+            "action_upper_bound_fraction": (
+                None
+                if self._episode_action_count == 0
+                else float(self._episode_action_upper_hits / self._episode_action_count)
+            ),
+            "training_updates": int(self._episode_update_count),
+        }
+        metrics.update(self._last_update_metrics)
+        self._reset_episode_metrics()
+        return metrics
 
     def calc_action(self, colloids: list[Colloid]) -> list[Action]:
         """
-        Computes the current state, samples new per-particle actions, and stages
-        the transition batch.
+        Computes the current state, samples new actions per decision instance,
+        actions, and stages the transition batch.
         """
         # 1. Get current state (s_t)
         current_obs = np.asarray(self.observable.compute_observable(colloids))
@@ -182,7 +280,7 @@ class SACAgent(Agent):
         elif current_obs.ndim != 2:
             raise ValueError(
                 "SACAgent expects observable arrays with "
-                "shape (n_particles, n_features)."
+                "shape (n_instances, n_features)."
             )
 
         # 2. Sample new action (a_t)
@@ -190,7 +288,7 @@ class SACAgent(Agent):
             self.rng, num=4
         )
         state_inputs = {"feature_data": jnp.asarray(current_obs)}
-        n_particles = int(current_obs.shape[0])
+        n_instances = int(current_obs.shape[0])
 
         if self._step_count < self.learning_starts:
             # Use uniform random actions during the learning_starts warm-up.
@@ -205,7 +303,7 @@ class SACAgent(Agent):
                 maxval = action_limits[:, 1]
             actions_jax = jax.random.uniform(
                 warmup_key,
-                shape=(n_particles, action_dim),
+                shape=(n_instances, action_dim),
                 minval=minval,
                 maxval=maxval,
             )
@@ -226,6 +324,7 @@ class SACAgent(Agent):
         action_np = np.asarray(jax.device_get(actions_jax))
         if action_np.ndim == 1:
             action_np = action_np[None, :]
+        self._update_action_metrics(action_np)
 
         # 3. Stage (s_t, a_t); reward and next state are attached in calc_reward().
         self._pending_observation = current_obs
@@ -233,8 +332,8 @@ class SACAgent(Agent):
         self._step_count += 1
 
         chosen_actions = []
-        for particle_action in action_np:
-            mapped_action = self.action_mapper(particle_action)
+        for instance_action in action_np:
+            mapped_action = self.action_mapper(instance_action)
             if isinstance(mapped_action, list):
                 chosen_actions.extend(mapped_action)
             else:
@@ -245,9 +344,9 @@ class SACAgent(Agent):
         self, colloids: list[Colloid], external_reward: float = 0.0
     ) -> float:
         """
-        Computes post-step rewards and closes one replay transition per particle.
+        Computes post-step rewards and closes one replay transition per instance.
 
-        Returns the mean reward across particles as a reporting summary only.
+        Returns the mean reward across instances as a reporting summary only.
         SAC training uses the per-transition rewards written into the replay
         buffer below, not this aggregated return value.
         """
@@ -265,7 +364,7 @@ class SACAgent(Agent):
         elif next_observation.ndim != 2:
             raise ValueError(
                 "SACAgent expects observable arrays with "
-                "shape (n_particles, n_features)."
+                "shape (n_instances, n_features)."
             )
 
         if (
@@ -273,29 +372,20 @@ class SACAgent(Agent):
             and self._pending_observation is not None
             and self._pending_action is not None
         ):
-            n_particles = int(self._pending_observation.shape[0])
-            if rewards.shape[0] != n_particles:
-                raise ValueError(
-                    "Reward array length must match the number of "
-                    "staged particle observations."
-                )
-            if next_observation.shape[0] != n_particles:
-                raise ValueError(
-                    "Next-observation batch size must match the number of "
-                    "staged particle observations."
-                )
-            if self._pending_action.shape[0] != n_particles:
-                raise ValueError(
-                    "Pending action batch size must match the number of "
-                    "staged particle observations."
-                )
+            n_instances = int(self._pending_observation.shape[0])
+            if rewards.shape[0] != n_instances:
+                raise ValueError("Reward array length must match n_instances.")
+            if next_observation.shape[0] != n_instances:
+                raise ValueError("Next-observation batch size must match n_instances.")
+            if self._pending_action.shape[0] != n_instances:
+                raise ValueError("Pending action batch size must match n_isntances.")
 
-            for particle_idx in range(n_particles):
+            for idx in range(n_instances):
                 transition = Transition(
-                    observation=self._pending_observation[particle_idx],
-                    action=self._pending_action[particle_idx],
-                    reward=float(rewards[particle_idx]),
-                    next_observation=next_observation[particle_idx],
+                    observation=self._pending_observation[idx],
+                    action=self._pending_action[idx],
+                    reward=float(rewards[idx]),
+                    next_observation=next_observation[idx],
                     terminated=terminated,
                     truncated=truncated,
                 )
@@ -337,6 +427,13 @@ class SACAgent(Agent):
 
             # 3. Compute loss and immediately apply updates
             metrics = self.loss.compute_loss(self.network, batch)
+            if self.training_metrics_enabled:
+                self._episode_update_count += 1
+                self._last_update_metrics = {
+                    key: float(np.asarray(value))
+                    for key, value in metrics.items()
+                    if np.asarray(value).ndim == 0
+                }
             logger.debug(metrics)
 
         return self._last_reward, killed

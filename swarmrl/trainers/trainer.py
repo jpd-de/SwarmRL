@@ -46,6 +46,7 @@ class Trainer:
         self,
         agents: List[ActorCriticAgent],
         checkpointers: List[BaseCheckpointer] | None = None,
+        episode_metrics_logger: object | None = None,
     ):
         """
         Constructor for the MLP RL.
@@ -59,6 +60,7 @@ class Trainer:
         """
         self.agents = {}
         self.checkpointers = list(checkpointers) if checkpointers is not None else []
+        self.episode_metrics_logger = episode_metrics_logger
 
         # Add the protocols to an easily accessible internal dict.
         # TODO: Maybe turn into a dataclass? Not sure if it helps yet.
@@ -94,6 +96,49 @@ class Trainer:
         else:
             self.checkpoint_manager = None
             logger.info("No Checkpointer provided.")
+
+    def _collect_agent_episode_metrics(self) -> dict[str, object]:
+        """Collect and reset per-agent episode metrics if supported."""
+        if self.episode_metrics_logger is None:
+            return {}
+
+        episode_metrics: dict[str, object] = {}
+        for agent in self.agents.values():
+            consume_metrics = getattr(agent, "consume_episode_metrics", None)
+            if not callable(consume_metrics):
+                continue
+
+            agent_metrics = consume_metrics()
+            if not agent_metrics:
+                continue
+
+            agent_name = getattr(agent, "particle_type", agent.__class__.__name__)
+            prefix = f"agent_{agent_name}"
+            for key, value in agent_metrics.items():
+                episode_metrics[f"{prefix}_{key}"] = value
+
+        return episode_metrics
+
+    def _log_episode_metrics(
+        self,
+        episode: int,
+        current_reward: float,
+        **extra_metrics,
+    ) -> None:
+        """Write a compact episode summary when a metrics logger is configured."""
+        if self.episode_metrics_logger is None:
+            return
+
+        log_episode = getattr(self.episode_metrics_logger, "log_episode", None)
+        if not callable(log_episode):
+            return
+
+        metrics = {
+            "current_reward": float(current_reward),
+            **extra_metrics,
+            **self._collect_agent_episode_metrics(),
+        }
+        log_episode(int(episode), metrics)
 
     def initialize_training(self) -> ForceFunction:
         """

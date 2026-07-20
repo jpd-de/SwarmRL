@@ -30,6 +30,7 @@ class FakeEngine:
 class FakeAgent:
     particle_type: int
     reward: float
+    episode_metrics: dict = field(default_factory=dict)
     reset_calls: int = 0
     calc_action_calls: int = 0
     update_agent_calls: int = 0
@@ -48,6 +49,9 @@ class FakeAgent:
     def update_agent(self):
         self.update_agent_calls += 1
         return self.reward, self.kill_switch
+
+    def consume_episode_metrics(self):
+        return self.episode_metrics
 
     def finalize(self):
         pass
@@ -148,6 +152,44 @@ def test_universal_trainer_continuous_mode_keeps_pending_transitions_between_epi
     assert agent.reset_calls == 1
     assert agent.calc_action_calls == 6
     assert agent.stored_transitions == 5
+
+
+def test_universal_trainer_writes_episode_metrics_when_logger_is_configured():
+    class DummyEpisodeMetricsLogger:
+        def __init__(self):
+            self.calls = []
+
+        def log_episode(self, episode, metrics):
+            self.calls.append((episode, metrics))
+
+    agent = FakeAgent(
+        particle_type=1,
+        reward=1.0,
+        episode_metrics={"action_mean": 0.5, "training_updates": 2},
+    )
+    engine = FakeEngine(colloids=[FakeColloid(id=1, type=1)])
+    metrics_logger = DummyEpisodeMetricsLogger()
+    trainer = UniversalTrainer([agent], episode_metrics_logger=metrics_logger)
+
+    trainer.perform_rl_training(
+        n_episodes=1,
+        episode_length=1,
+        load_bar=False,
+        system_runner=engine,
+    )
+
+    assert metrics_logger.calls == [
+        (
+            1,
+            {
+                "current_reward": 1.0,
+                "running_reward": 1.0,
+                "killed": False,
+                "agent_1_action_mean": 0.5,
+                "agent_1_training_updates": 2,
+            },
+        )
+    ]
 
 
 def test_universal_trainer_episodic_reset_uses_cycle_tags_and_finalizes_engines():
