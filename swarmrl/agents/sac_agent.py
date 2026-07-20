@@ -14,6 +14,7 @@ from swarmrl.losses.sac_loss import SoftActorCriticLoss
 from swarmrl.networks.flax_network import FlaxModel
 from swarmrl.observables.observable import Observable
 from swarmrl.replay_buffer.replay_buffer import ReplayBuffer
+from swarmrl.replay_buffer.sequence import SequenceWindow
 from swarmrl.replay_buffer.transition import Transition
 from swarmrl.sampling_strategies.sampling_strategy import ContinuousSamplingStrategy
 from swarmrl.tasks.task import Task
@@ -51,6 +52,7 @@ class SACAgent(Agent):
         batch_size: int = 256,
         learning_starts: int = 1000,
         gradient_steps: int = 1,
+        sequence_length: int = 1,
         train: bool = True,
         seed: int = 42,
         storage_config: AgentStorageConfig | None = None,
@@ -105,6 +107,9 @@ class SACAgent(Agent):
         self.batch_size = batch_size
         self.learning_starts = learning_starts
         self.gradient_steps = gradient_steps
+        if sequence_length <= 0:
+            raise ValueError("sequence_length must be > 0")
+        self.sequence_length = int(sequence_length)
         self.train = train
         self.training_metrics_enabled = bool(training_metrics_enabled)
 
@@ -137,6 +142,9 @@ class SACAgent(Agent):
         self._pending_observation = None
         self._pending_action = None
         self._last_reward = 0.0
+        self._episode_id = -1
+        self._observation_history = SequenceWindow(self.sequence_length)
+        self._stream_timesteps = np.zeros(0, dtype=np.int32)
         self._learning_starts_logged = False
         self._reset_episode_metrics()
 
@@ -171,6 +179,9 @@ class SACAgent(Agent):
         self.task.initialize(colloids)
         self._pending_observation = None
         self._pending_action = None
+        self._episode_id += 1
+        self._observation_history.reset(len(colloids))
+        self._stream_timesteps = np.zeros(len(colloids), dtype=np.int32)
         self.kill_switch = False
         self._reset_episode_metrics()
 
@@ -287,7 +298,10 @@ class SACAgent(Agent):
         self.rng, network_key, sample_key, warmup_key = jax.random.split(
             self.rng, num=4
         )
-        state_inputs = {"feature_data": jnp.asarray(current_obs)}
+        network_observations = current_obs
+        if self.sequence_length > 1:
+            network_observations = self._observation_history.append(current_obs)
+        state_inputs = {"feature_data": jnp.asarray(network_observations)}
         n_instances = int(current_obs.shape[0])
 
         if self._step_count < self.learning_starts:
@@ -388,8 +402,12 @@ class SACAgent(Agent):
                     next_observation=next_observation[idx],
                     terminated=terminated,
                     truncated=truncated,
+                    stream_id=idx,
+                    episode_id=self._episode_id,
+                    timestep=int(self._stream_timesteps[idx]),
                 )
                 self.replay_buffer.add(transition)
+                self._stream_timesteps[idx] += 1
                 if self.transition_trajectory_storage is not None:
                     self.transition_trajectory_storage.write(transition)
 
@@ -406,7 +424,9 @@ class SACAgent(Agent):
         if (
             not self.train
             or self._step_count < self.learning_starts
-            or not self.replay_buffer.can_sample(self.batch_size)
+            or not self.replay_buffer.can_sample_for_training(
+                self.batch_size, self.sequence_length
+            )
         ):
             return self._last_reward, killed
 
@@ -419,7 +439,9 @@ class SACAgent(Agent):
 
         for _ in range(self.gradient_steps):
             # 1. Sample Replay buffer
-            batch = self.replay_buffer.sample(self.batch_size)
+            batch = self.replay_buffer.sample_for_training(
+                self.batch_size, self.sequence_length
+            )
 
             # 2. Inject fresh RNG keys into batch payload
             self.rng, actor_rng, next_actor_rng = jax.random.split(self.rng, num=3)

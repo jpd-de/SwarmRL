@@ -1,9 +1,8 @@
 """Simple ring-buffer replay memory for off-policy algorithms."""
 
-from dataclasses import fields
-
 import numpy as np
 
+from swarmrl.replay_buffer.ring_storage import RingStorage
 from swarmrl.replay_buffer.transition import Transition
 
 
@@ -29,58 +28,37 @@ class ReplayBuffer:
         """
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
-        self.capacity = int(capacity)
-        self._rng = np.random.default_rng(seed)
+        self._storage = RingStorage(capacity, seed)
 
-        self._size = 0
-        self._position = 0
-
-        self._initialized = False
-        self._buffers: dict[str, np.ndarray] = {}
+    @property
+    def capacity(self) -> int:
+        return self._storage.capacity
 
     def __len__(self) -> int:
-        return self._size
-
-    def _init_buffers(self, transition: Transition) -> None:
-        """Dynamically allocates contiguous NumPy arrays based on Transition fields."""
-        for field in fields(transition):
-            key = field.name
-            val = getattr(transition, key)
-            val_arr = np.asarray(val)
-
-            # Downcast common 64-bit inputs to reduce buffer memory use.
-            dtype = val_arr.dtype
-            if dtype == np.float64:
-                dtype = np.float32
-            elif dtype == np.int64:
-                dtype = np.int32
-
-            # Dynamic shape selection: scalars are expanded to (capacity, 1)
-            # to maintain standard batch dimensions.
-
-            if val_arr.ndim == 0:
-                shape = (self.capacity, 1)
-            else:
-                shape = (self.capacity,) + val_arr.shape
-
-            self._buffers[key] = np.empty(shape, dtype=dtype)
-
-        self._initialized = True
+        return len(self._storage)
 
     def add(self, transition: Transition) -> None:
-        if not self._initialized:
-            self._init_buffers(transition)
-
-        # Write directly into pre-allocated buffer slots.
-        for key in self._buffers:
-            val = getattr(transition, key)
-            self._buffers[key][self._position] = val
-
-        self._position = (self._position + 1) % self.capacity
-        self._size = min(self._size + 1, self.capacity)
+        self._storage.add(transition)
 
     def can_sample(self, batch_size: int) -> bool:
-        return self._size >= int(batch_size)
+        return len(self) >= int(batch_size)
+
+    def can_sample_for_training(
+        self, batch_size: int, sequence_length: int = 1
+    ) -> bool:
+        """Return whether this buffer can provide the requested training batch."""
+        return sequence_length == 1 and self.can_sample(batch_size)
+
+    def sample_for_training(
+        self, batch_size: int, sequence_length: int = 1
+    ) -> dict[str, np.ndarray]:
+        """Sample the training batch using this buffer's data contract."""
+        if sequence_length != 1:
+            raise TypeError(
+                "ReplayBuffer cannot sample temporal windows; use "
+                "SequenceReplayBuffer."
+            )
+        return self.sample(batch_size)
 
     def sample(self, batch_size: int) -> dict[str, np.ndarray]:
         if batch_size <= 0:
@@ -88,9 +66,19 @@ class ReplayBuffer:
         if not self.can_sample(batch_size):
             raise ValueError(
                 f"Cannot sample {batch_size} transitions "
-                f"from buffer of size {self._size}."
+                f"from buffer of size {len(self)}."
             )
 
-        indices = self._rng.choice(self._size, size=batch_size, replace=False)
+        indices = self._storage.rng.choice(len(self), size=batch_size, replace=False)
 
-        return {key: buf[indices] for key, buf in self._buffers.items()}
+        return {
+            key: self._storage.buffers[key][indices]
+            for key in (
+                "observation",
+                "action",
+                "reward",
+                "next_observation",
+                "terminated",
+                "truncated",
+            )
+        }
