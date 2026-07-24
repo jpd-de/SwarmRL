@@ -147,6 +147,8 @@ class SACAgent(Agent):
         self._stream_timesteps = np.zeros(0, dtype=np.int32)
         self._learning_starts_logged = False
         self._reset_episode_metrics()
+        self._logged_warmup_start = False
+        self._logged_policy_start = False
 
         self._validate_sac_network_contract()
         if "critic" not in self.network.target_params:
@@ -306,6 +308,12 @@ class SACAgent(Agent):
 
         if self._step_count < self.learning_starts:
             # Use uniform random actions during the learning_starts warm-up.
+            if not self._logged_warmup_start:
+                logger.info(
+                    "SAC warm-up active for the first {} action selections.",
+                    self.learning_starts,
+                )
+                self._logged_warmup_start = True
             action_dim = self.sampling_strategy.action_dimension
             action_limits = getattr(self.sampling_strategy, "action_limits", None)
             if action_limits is None:
@@ -322,6 +330,12 @@ class SACAgent(Agent):
                 maxval=maxval,
             )
         else:
+            if not self._logged_policy_start:
+                logger.info(
+                    "SAC warm-up finished at step {}. Using policy network actions now.",
+                    self._step_count,
+                )
+                self._logged_policy_start = True
             logits_jax = self.network.model.apply(
                 {"params": self.network.model_state.params},
                 rng_key=network_key,
