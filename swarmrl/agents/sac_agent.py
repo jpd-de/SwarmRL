@@ -332,8 +332,8 @@ class SACAgent(Agent):
         else:
             if not self._logged_policy_start:
                 logger.info(
-                    "SAC warm-up finished at step {}. Using policy network actions now.",
-                    self._step_count,
+                    f"SAC warm-up finished at step {self._step_count}."
+                    "Using policy network actions now.",
                 )
                 self._logged_policy_start = True
             logits_jax = self.network.model.apply(
