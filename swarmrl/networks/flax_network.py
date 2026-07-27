@@ -13,7 +13,6 @@ import numpy as onp
 from flax import linen as nn
 from flax.core.frozen_dict import FrozenDict
 from flax.training.train_state import TrainState
-from loguru import logger
 from optax._src.base import GradientTransformation
 
 from swarmrl.action_selection.action_selector import ActionSelector
@@ -22,6 +21,7 @@ from swarmrl.exploration_policies.random_exploration import RandomExploration
 from swarmrl.networks.network import Network
 from swarmrl.sampling_strategies.gumbel_distribution import GumbelDistribution
 from swarmrl.sampling_strategies.sampling_strategy import SamplingStrategy
+from swarmrl.utils.logging_utils import log_jax_runtime_summary
 
 
 class FlaxModel(Network, ABC):
@@ -148,9 +148,13 @@ class FlaxModel(Network, ABC):
 
         See the parent class for a full doc-string.
         """
-        # Logging for grads and pre-train model state
-        logger.debug(f"{grads=}")
-        logger.debug(f"{self.model_state=}")
+        # Keep diagnostics scalar and bounded; full pytrees can be gigabytes.
+        log_jax_runtime_summary("gradients", grads, only_if_nonfinite=True)
+        log_jax_runtime_summary(
+            "parameters_before_update",
+            self.model_state.params,
+            only_if_nonfinite=True,
+        )
 
         if isinstance(self.optimizer, dict):
             pass
@@ -158,8 +162,11 @@ class FlaxModel(Network, ABC):
         else:
             self.model_state = self.model_state.apply_gradients(grads=grads)
 
-        # Logging for post-train model state
-        logger.debug(f"{self.model_state=}")
+        log_jax_runtime_summary(
+            "parameters_after_update",
+            self.model_state.params,
+            only_if_nonfinite=True,
+        )
 
         self.epoch_count += 1
 
@@ -199,7 +206,7 @@ class FlaxModel(Network, ABC):
             logits, _ = self.apply_fn(
                 {"params": self.model_state["params"]}, np.array(observables)
             )
-        logger.debug(f"{logits=}")  # (n_colloids, n_actions)
+        log_jax_runtime_summary("action_logits", logits, only_if_nonfinite=True)
         sampling_key = self._next_rng_key()
         exploration_key = jax.random.PRNGKey(0)
         if not self.deployment_mode:

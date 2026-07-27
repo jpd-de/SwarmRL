@@ -4,6 +4,7 @@ import sys
 import typing
 
 import jax
+import jax.numpy as jnp
 from loguru import logger
 
 
@@ -14,6 +15,8 @@ class _SwarmRLLoggingConfig:
         self.sink_ids: typing.List[int] = []
         self.jax_runtime_log_level_no: int = logger.level("DEBUG").no
         self.jax_runtime_log_enabled: bool = True
+        self.jax_runtime_summary_enabled: bool = False
+        self.reported_nonfinite_labels: typing.Set[str] = set()
 
 
 _LOGGING_CONFIG = _SwarmRLLoggingConfig()
@@ -39,6 +42,14 @@ def set_jax_runtime_log_enabled(enabled: bool) -> None:
     _LOGGING_CONFIG.jax_runtime_log_enabled = bool(enabled)
 
 
+def set_jax_runtime_summary_enabled(enabled: bool) -> None:
+    """Enable compact scalar summaries for JAX runtime values."""
+
+    _LOGGING_CONFIG.jax_runtime_summary_enabled = bool(enabled)
+    if enabled:
+        _LOGGING_CONFIG.reported_nonfinite_labels.clear()
+
+
 def setup_swarmrl_logger(
     filename: typing.Optional[str] = None,
     loglevel_terminal: typing.Union[int, str] = "INFO",
@@ -46,6 +57,7 @@ def setup_swarmrl_logger(
     include_user_logs: bool = False,
     remove_default_sink: bool = True,
     log_jax_values: bool = False,
+    log_jax_summaries: bool = False,
 ):
     """
     Configure package logging with Loguru and enable swarmrl log output.
@@ -73,6 +85,9 @@ def setup_swarmrl_logger(
     log_jax_values
             If False, disable JAX runtime value logging callbacks produced via
             ``log_jax_runtime_value`` to prevent very verbose output.
+    log_jax_summaries
+            If True, enable compact finite/NaN/Inf and range summaries for JAX
+            runtime values. These summaries do not print full arrays.
 
     """
     if remove_default_sink:
@@ -127,6 +142,7 @@ def setup_swarmrl_logger(
     )
 
     set_jax_runtime_log_enabled(log_jax_values)
+    set_jax_runtime_summary_enabled(log_jax_summaries)
     set_jax_runtime_log_level(min(active_level_numbers))
     logger.enable("swarmrl")
 
@@ -153,3 +169,82 @@ def log_jax_runtime_value(
         logger.log(level, "{label} = {value}", label=label, value=x)
 
     jax.debug.callback(_emit, value, ordered=True)
+
+
+def runtime_summary_statistics(value):
+    """Return compact finite/range statistics for an array or pytree.
+
+    The returned tuple contains ``(finite, nan_count, inf_count, min, max,
+    mean)``. Non-finite entries are excluded from the range and mean.
+    """
+
+    leaves = [jnp.ravel(jnp.asarray(leaf)) for leaf in jax.tree_util.tree_leaves(value)]
+    if not leaves:
+        leaves = [jnp.asarray([], dtype=jnp.float32)]
+    values = jnp.concatenate(leaves)
+    finite_mask = jnp.isfinite(values)
+    finite_values = jnp.where(finite_mask, values, 0.0)
+    finite_count = jnp.sum(finite_mask)
+    safe_min = jnp.min(jnp.where(finite_mask, values, jnp.inf))
+    safe_max = jnp.max(jnp.where(finite_mask, values, -jnp.inf))
+    safe_mean = jnp.sum(finite_values) / jnp.maximum(finite_count, 1)
+
+    return (
+        jnp.all(finite_mask),
+        jnp.sum(jnp.isnan(values)),
+        jnp.sum(jnp.isinf(values)),
+        safe_min,
+        safe_max,
+        safe_mean,
+    )
+
+
+def log_jax_runtime_summary(
+    label: str,
+    value,
+    level: typing.Union[str, int] = "DEBUG",
+    only_if_nonfinite: bool = False,
+) -> None:
+    """Log compact runtime statistics without materializing full arrays.
+
+    When ``only_if_nonfinite`` is true, only the first non-finite report for a
+    label is emitted. This is intended for action logits and model parameters,
+    which would otherwise produce one log record per simulation step after a
+    failure.
+    """
+
+    if not _LOGGING_CONFIG.jax_runtime_summary_enabled:
+        return
+
+    level_no = _to_level_number(level)
+    if level_no < _LOGGING_CONFIG.jax_runtime_log_level_no:
+        return
+
+    def _emit(finite, nan_count, inf_count, minimum, maximum, mean):
+        finite = bool(finite)
+        if only_if_nonfinite and finite:
+            return
+        if only_if_nonfinite and label in _LOGGING_CONFIG.reported_nonfinite_labels:
+            return
+        if only_if_nonfinite and not finite:
+            _LOGGING_CONFIG.reported_nonfinite_labels.add(label)
+        logger.log(
+            level,
+            (
+                "{label}: finite={finite} nan={nan_count} inf={inf_count} "
+                "min={minimum} max={maximum} mean={mean}"
+            ),
+            label=label,
+            finite=finite,
+            nan_count=int(nan_count),
+            inf_count=int(inf_count),
+            minimum=float(minimum),
+            maximum=float(maximum),
+            mean=float(mean),
+        )
+
+    jax.debug.callback(
+        _emit,
+        *runtime_summary_statistics(value),
+        ordered=True,
+    )
