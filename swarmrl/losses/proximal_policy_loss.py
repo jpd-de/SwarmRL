@@ -111,23 +111,20 @@ class ProximalPolicyLoss(Loss, ABC):
 
         # compute the probabilities of the old actions under the new policy
         new_probabilities = jax.nn.softmax(new_logits, axis=-1)
+        new_log_probs = jax.nn.log_softmax(new_logits, axis=-1)
         log_jax_runtime_summary("new_logits", new_logits)
         log_jax_runtime_summary("new_probabilities", new_probabilities)
 
         # compute the entropy of the whole distribution
         entropy = self.sampling_strategy.compute_entropy(new_probabilities).sum()
         log_jax_runtime_summary("entropy", entropy)
-        chosen_log_probs = jnp.log(
-            gather_n_dim_indices(new_probabilities, action_indices) + self.eps
-        )
+        log_prob_floor = jnp.log(self.eps)
+        chosen_log_probs = gather_n_dim_indices(new_log_probs, action_indices)
+        chosen_log_probs = jnp.logaddexp(chosen_log_probs, log_prob_floor)
+        old_log_probs = jnp.logaddexp(old_log_probs, log_prob_floor)
 
         # compute the ratio between old and new probs
         log_ratio = chosen_log_probs - old_log_probs
-        log_ratio = jnp.clip(
-            log_ratio,
-            jnp.log(1.0 - self.epsilon),
-            jnp.log(1.0 + self.epsilon),
-        )
         ratio = jnp.exp(log_ratio)
 
         # Compute critic loss
