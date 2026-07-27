@@ -25,6 +25,7 @@ from swarmrl.engine import espresso
 
 # Setup a swarmrl logger but disable it.
 # Use logging_utils.setup_swarmrl_logger() to actually enable/configure the logger.
+_loguru_logger.warning("PPO CLIP BRANCH - NOT ON THE MASTER BRANCH AT THE MOMENT!")
 _loguru_logger.disable("swarmrl")
 
 
