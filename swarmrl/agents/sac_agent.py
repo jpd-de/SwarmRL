@@ -190,14 +190,6 @@ class SACAgent(Agent):
     def _reset_episode_metrics(self):
         if not self.training_metrics_enabled:
             return
-        self._episode_action_count = 0
-        self._episode_action_sum = 0.0
-        self._episode_action_sumsq = 0.0
-        self._episode_action_min = None
-        self._episode_action_max = None
-        self._episode_action_lower_hits = 0
-        self._episode_action_upper_hits = 0
-        self._episode_update_count = 0
         self._last_update_metrics = {
             "critic_loss": None,
             "actor_loss": None,
@@ -206,77 +198,11 @@ class SACAgent(Agent):
             "q1_mean": None,
         }
 
-    def _update_action_metrics(self, action_np: np.ndarray) -> None:
-        if not self.training_metrics_enabled:
-            return
-        flat_actions = np.asarray(action_np, dtype=float).ravel()
-        if flat_actions.size == 0:
-            return
-
-        self._episode_action_count += int(flat_actions.size)
-        self._episode_action_sum += float(np.sum(flat_actions))
-        self._episode_action_sumsq += float(np.sum(flat_actions**2))
-        current_min = float(np.min(flat_actions))
-        current_max = float(np.max(flat_actions))
-        self._episode_action_min = (
-            current_min
-            if self._episode_action_min is None
-            else min(self._episode_action_min, current_min)
-        )
-        self._episode_action_max = (
-            current_max
-            if self._episode_action_max is None
-            else max(self._episode_action_max, current_max)
-        )
-
-        action_limits = getattr(self.sampling_strategy, "action_limits", None)
-        if action_limits is not None:
-            action_limits = np.asarray(action_limits, dtype=float)
-            low = action_limits[:, 0]
-            high = action_limits[:, 1]
-            action_array = np.asarray(action_np, dtype=float)
-            tolerance = 1e-6
-            self._episode_action_lower_hits += int(
-                np.sum(action_array <= (low + tolerance))
-            )
-            self._episode_action_upper_hits += int(
-                np.sum(action_array >= (high - tolerance))
-            )
-
     def consume_episode_metrics(self) -> dict[str, float | int | None]:
         """Return and reset the lightweight episode metrics collected so far."""
         if not self.training_metrics_enabled:
             return {}
-        if self._episode_action_count > 0:
-            action_mean = self._episode_action_sum / self._episode_action_count
-            action_var = max(
-                self._episode_action_sumsq / self._episode_action_count
-                - action_mean**2,
-                0.0,
-            )
-            action_std = float(np.sqrt(action_var))
-        else:
-            action_mean = None
-            action_std = None
-
-        metrics: dict[str, float | int | None] = {
-            "action_count": int(self._episode_action_count),
-            "action_mean": None if action_mean is None else float(action_mean),
-            "action_std": action_std,
-            "action_min": self._episode_action_min,
-            "action_max": self._episode_action_max,
-            "action_lower_bound_fraction": (
-                None
-                if self._episode_action_count == 0
-                else float(self._episode_action_lower_hits / self._episode_action_count)
-            ),
-            "action_upper_bound_fraction": (
-                None
-                if self._episode_action_count == 0
-                else float(self._episode_action_upper_hits / self._episode_action_count)
-            ),
-            "training_updates": int(self._episode_update_count),
-        }
+        metrics: dict[str, float | int | None] = {}
         metrics.update(self._last_update_metrics)
         self._reset_episode_metrics()
         return metrics
@@ -352,8 +278,6 @@ class SACAgent(Agent):
         action_np = np.asarray(jax.device_get(actions_jax))
         if action_np.ndim == 1:
             action_np = action_np[None, :]
-        self._update_action_metrics(action_np)
-
         # 3. Stage (s_t, a_t); reward and next state are attached in calc_reward().
         self._pending_observation = current_obs
         self._pending_action = action_np
@@ -465,7 +389,6 @@ class SACAgent(Agent):
             # 3. Compute loss and immediately apply updates
             metrics = self.loss.compute_loss(self.network, batch)
             if self.training_metrics_enabled:
-                self._episode_update_count += 1
                 self._last_update_metrics = {
                     key: float(np.asarray(value))
                     for key, value in metrics.items()
