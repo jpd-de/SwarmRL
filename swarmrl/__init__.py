@@ -22,7 +22,8 @@ from swarmrl import (
     utils,
     value_functions,
 )
-from swarmrl.engine import espresso
+
+# from swarmrl.engine import espresso
 
 # Setup a swarmrl logger but disable it.
 # Use logging_utils.setup_swarmrl_logger() to actually enable/configure the logger.
@@ -30,7 +31,7 @@ _loguru_logger.disable("swarmrl")
 
 
 __all__ = [
-    espresso.__name__,
+    # espresso.__name__,
     utils.__name__,
     action_selection.__name__,
     losses.__name__,
