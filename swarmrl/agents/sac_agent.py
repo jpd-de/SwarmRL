@@ -196,6 +196,10 @@ class SACAgent(Agent):
             "temperature_loss": None,
             "alpha": None,
             "q1_mean": None,
+            "log_std_mean": None,
+            "log_std_max": None,
+            "log_std_raw_mean": None,
+            "log_std_raw_abs_max": None,
         }
 
     def consume_episode_metrics(self) -> dict[str, float | int | None]:
@@ -268,6 +272,48 @@ class SACAgent(Agent):
                 method=self.network.model.actor,
                 **state_inputs,
             )
+            if self.training_metrics_enabled:
+                action_dim = getattr(self.sampling_strategy, "action_dimension", None)
+                log_std_min = getattr(self.sampling_strategy, "log_std_min", None)
+                log_std_max = getattr(self.sampling_strategy, "log_std_max", None)
+                if (
+                    action_dim is not None
+                    and log_std_min is not None
+                    and log_std_max is not None
+                ):
+                    # Latest (not averaged) per-step snapshot, matching the
+                    # other lightweight metrics here. Tracks whether the
+                    # actor's learned std has saturated against log_std_max
+                    # -- see scripts/studies/probe_actor_log_std.py, which
+                    # found this pinned at the ceiling (zero variance, every
+                    # dimension) within ~2000 episodes of a 20k-episode run
+                    # and never recovering, independent of alpha's schedule.
+                    # Mirrors the sampling strategy's own smooth tanh
+                    # reparameterization onto [log_std_min, log_std_max]
+                    # (not a hard clip -- see gaussian_distribution.py).
+                    log_std_raw = logits_jax[..., action_dim:]
+                    log_std_squashed = log_std_min + 0.5 * (
+                        log_std_max - log_std_min
+                    ) * (jnp.tanh(log_std_raw) + 1.0)
+                    self._last_update_metrics["log_std_mean"] = float(
+                        jnp.mean(log_std_squashed)
+                    )
+                    self._last_update_metrics["log_std_max"] = float(
+                        jnp.max(log_std_squashed)
+                    )
+                    # Raw, pre-squash value: since tanh saturates smoothly
+                    # rather than clipping hard, this can't drift unboundedly
+                    # the way it could under a straight-through estimator
+                    # around a hard clip -- but it's still worth watching to
+                    # see how deep into the saturating tail training pushes
+                    # it (large |raw| means a numerically-vanishing, if not
+                    # exactly zero, gradient in float32).
+                    self._last_update_metrics["log_std_raw_mean"] = float(
+                        jnp.mean(log_std_raw)
+                    )
+                    self._last_update_metrics["log_std_raw_abs_max"] = float(
+                        jnp.max(jnp.abs(log_std_raw))
+                    )
             actions_jax, _ = self.sampling_strategy(
                 logits=logits_jax,
                 rng_key=sample_key,
@@ -392,11 +438,15 @@ class SACAgent(Agent):
             # 3. Compute loss and immediately apply updates
             metrics = self.loss.compute_loss(self.network, batch)
             if self.training_metrics_enabled:
-                self._last_update_metrics = {
+                # Merge, not replace: calc_action() stashes log_std_mean/max
+                # into this same dict on every action selection, and a plain
+                # reassignment here would silently wipe those out again
+                # before the episode ends.
+                self._last_update_metrics.update({
                     key: float(np.asarray(value))
                     for key, value in metrics.items()
                     if np.asarray(value).ndim == 0
-                }
+                })
             logger.debug(metrics)
 
         return self._last_reward, killed

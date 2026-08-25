@@ -141,10 +141,23 @@ class ContinuousGaussianDistribution(ContinuousSamplingStrategy):
             if rng_key is None:
                 raise ValueError("A valid JAX PRNGKey is required during training.")
 
-            log_std = jnp.clip(
-                logits[..., self.action_dimension :],
-                self.log_std_min,
-                self.log_std_max,
+            log_std_raw = logits[..., self.action_dimension :]
+            # Smooth tanh reparameterization onto [log_std_min, log_std_max]
+            # instead of a hard jnp.clip. A hard clip has exact-zero gradient
+            # outside its bounds: once the raw pre-squash output first
+            # overshoots the boundary, no gradient can ever pull it back --
+            # confirmed empirically (scripts/studies/probe_actor_log_std.py):
+            # log_std pinned to log_std_max within ~2000 episodes and never
+            # recovered for the rest of a 20k-episode run, independent of
+            # alpha's later decay. tanh keeps a real (if shrinking) gradient
+            # everywhere, with no dead zone, and -- unlike a straight-through
+            # estimator around the hard clip -- the raw value can't drift
+            # unboundedly far past the boundary either: further growth of
+            # log_std_raw yields diminishing returns by construction, so
+            # there's no "long return trip" once training's incentive
+            # reverses.
+            log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
+                jnp.tanh(log_std_raw) + 1.0
             )
             std = jnp.exp(log_std)
 
