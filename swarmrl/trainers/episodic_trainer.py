@@ -48,6 +48,7 @@ class EpisodicTrainer(Trainer):
         reset_frequency: int = 1,
         load_bar: bool = True,
         save_episodic_data: bool = True,
+        episode_offset: int = 0,
     ):
         """
         Perform the RL training.
@@ -59,7 +60,9 @@ class EpisodicTrainer(Trainer):
         system : espressomd.System
                 Engine used to perform steps for each agent.
         n_episodes : int
-                Number of episodes to use in the training.
+                Absolute episode target for this training run. When resuming
+                (``episode_offset > 0``), this stays the *original* total, so the
+                loop runs only the remaining episodes rather than n_episodes more.
         episode_length : int
                 Number of time steps in one episode.
         reset_frequency : int (default=1)
@@ -74,6 +77,12 @@ class EpisodicTrainer(Trainer):
                 cycle_index is passed to the EsperessoMD engine as 'h5_group_tag'. See
                 the implementation in the test_semi_episodic_data_writing function in
                 CI/espresso_tests/integration_tests/test_rl_trainers.py
+        episode_offset : int (default=0)
+                Absolute episode number to resume from (e.g. parsed from a restored
+                checkpoint's directory name). Episode numbering, checkpoint naming,
+                and trajectory cycle numbering all become absolute so a resumed run
+                continues the same sequence instead of restarting at 0 in a fresh
+                directory.
 
         Notes
         -----
@@ -84,7 +93,6 @@ class EpisodicTrainer(Trainer):
         rewards = np.zeros(n_episodes)
         current_reward = 0.0
         force_fn = self.initialize_training()
-        cycle_index = 0
         progress = Progress(
             "Episode: {task.fields[Episode]}",
             BarColumn(),
@@ -97,7 +105,8 @@ class EpisodicTrainer(Trainer):
             task = progress.add_task(
                 "Episodic Training",
                 total=n_episodes,
-                Episode=1,
+                completed=episode_offset,
+                Episode=episode_offset + 1,
                 current_reward=current_reward,
                 running_reward=np.mean(rewards),
                 visible=load_bar,
@@ -105,7 +114,7 @@ class EpisodicTrainer(Trainer):
 
             break_training = False
             stop_after_episode = -1
-            for episode in range(n_episodes):
+            for episode in range(episode_offset, n_episodes):
                 # Check if the system should be reset.
                 if episode % reset_frequency == 0 or killed:
                     if self.engine is not None:
@@ -115,8 +124,15 @@ class EpisodicTrainer(Trainer):
                     self.engine = None
                     if save_episodic_data:
                         try:
+                            # Derived from the absolute episode rather than a
+                            # separately-tracked counter, so a resumed run
+                            # continues cycle numbering instead of restarting
+                            # at cycle_0 (reproduces the same sequence of
+                            # values as a plain incrementing counter would,
+                            # since resets only ever land on episode ==
+                            # k * reset_frequency).
+                            cycle_index = episode // reset_frequency
                             self.engine = get_engine(system, f"{cycle_index}")
-                            cycle_index += 1
                         except TypeError:
                             raise ValueError(
                                 "The system runner does not support episodic data"
@@ -136,9 +152,17 @@ class EpisodicTrainer(Trainer):
 
                 force_fn, current_reward, killed = self.update_rl()
 
+                # rewards[0:episode_offset] is never filled in this process (a
+                # resumed run allocates a fresh zero array but only starts
+                # writing at episode_offset), so these windows are anchored
+                # there instead of index 0 -- otherwise a resume would
+                # silently dilute running/total reward with phantom zeros.
                 display_episode = episode + 1
-                if display_episode < 10:
-                    running_reward = np.round(np.mean(rewards[:display_episode]), 2)
+                local_filled = episode - episode_offset + 1
+                if local_filled < 10:
+                    running_reward = np.round(
+                        np.mean(rewards[episode_offset:display_episode]), 2
+                    )
                 else:
                     running_reward = np.round(
                         np.mean(rewards[display_episode - 10 : display_episode]), 2
@@ -149,7 +173,9 @@ class EpisodicTrainer(Trainer):
                     episode=episode + 1,
                     current_reward=current_reward,
                     running_reward=running_reward,
-                    total_reward=float(np.mean(rewards[:display_episode])),
+                    total_reward=float(
+                        np.mean(rewards[episode_offset:display_episode])
+                    ),
                     killed=killed,
                 )
                 self.maybe_save_checkpoint(rewards, episode, current_reward)
