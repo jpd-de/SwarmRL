@@ -115,8 +115,19 @@ class EpisodicTrainer(Trainer):
             break_training = False
             stop_after_episode = -1
             for episode in range(episode_offset, n_episodes):
-                # Check if the system should be reset.
-                if episode % reset_frequency == 0 or killed:
+                # Check if the system should be reset. `episode == episode_offset`
+                # forces initialization on a resumed run's first iteration even
+                # when the offset isn't a multiple of reset_frequency -- self.engine
+                # starts as None in a fresh process and is only ever set inside
+                # this branch, so without this the engine stays None and the
+                # first self.engine.integrate() call below crashes. For a fresh
+                # run (episode_offset == 0) this is already covered by the
+                # episode % reset_frequency == 0 case, so it's a no-op there.
+                if (
+                    episode % reset_frequency == 0
+                    or killed
+                    or episode == episode_offset
+                ):
                     if self.engine is not None:
                         self.engine.finalize()
 
