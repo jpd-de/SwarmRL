@@ -9,6 +9,30 @@ from flax import struct
 from swarmrl.sampling_strategies.sampling_strategy import ContinuousSamplingStrategy
 
 
+def soft_clip(x: jnp.ndarray, low: float, high: float) -> jnp.ndarray:
+    """Smoothly bound ``x`` into ``(low, high)`` via a two-sided softplus.
+
+    Unlike ``jnp.clip`` or a hard-bounded ``tanh`` reparameterization, this
+    has a nonzero gradient everywhere (including far outside the bounds),
+    so a value pushed toward either bound during training can still be
+    pulled back. A hard clip's exact-zero gradient outside its bounds, or
+    tanh's exact float32 saturation at |x| gtrsim 9, both make that
+    impossible once the raw value first overshoots -- confirmed
+    empirically to happen within a few hundred gradient steps, not
+    gradually (see scripts/studies/probe_actor_log_std.py).
+
+    Note: composing two one-sided softplus clamps is not perfectly
+    symmetric -- the bound applied second (here, ``low``) is a true hard
+    floor, while the bound applied first (``high``) can leak slightly past
+    it for extreme inputs (e.g. ~3% for a narrow [low, high] range). This
+    is the standard formula used in several SAC implementations and is
+    inconsequential in practice.
+    """
+    x = high - jax.nn.softplus(high - x)
+    x = low + jax.nn.softplus(x - low)
+    return x
+
+
 def action_limits_from_bounds(
     action_dimension: int,
     low: float,
@@ -43,6 +67,7 @@ class ContinuousGaussianDistribution(ContinuousSamplingStrategy):
     log_scale: Optional[jnp.ndarray] = struct.field(pytree_node=True, default=None)
     log_std_min: float = struct.field(pytree_node=False, default=-20.0)
     log_std_max: float = struct.field(pytree_node=False, default=1.0)
+    log_std_no_squash: bool = struct.field(pytree_node=False, default=False)
     float_precision: jnp.dtype = struct.field(pytree_node=False, default=jnp.float32)
 
     @classmethod
@@ -52,6 +77,7 @@ class ContinuousGaussianDistribution(ContinuousSamplingStrategy):
         action_limits: Optional[jnp.ndarray] = None,
         log_std_min: float = -20.0,
         log_std_max: float = 1.0,
+        log_std_no_squash: bool = False,
         float_precision: jnp.dtype = jnp.float32,
     ) -> "ContinuousGaussianDistribution":
         """Factory method to handle the initialization validation safely."""
@@ -75,15 +101,13 @@ class ContinuousGaussianDistribution(ContinuousSamplingStrategy):
         scale = (action_limits[:, 1] - action_limits[:, 0]) / 2.0
         log_scale = jnp.log(scale)
 
-        scale = (action_limits[:, 1] - action_limits[:, 0]) / 2.0
-        log_scale = jnp.log(scale)
-
         return cls(
             action_dimension=int(action_dimension),
             action_limits=action_limits,
             log_scale=log_scale,
             log_std_min=float(log_std_min),
             log_std_max=float(log_std_max),
+            log_std_no_squash=bool(log_std_no_squash),
             float_precision=float_precision,
         )
 
@@ -142,23 +166,19 @@ class ContinuousGaussianDistribution(ContinuousSamplingStrategy):
                 raise ValueError("A valid JAX PRNGKey is required during training.")
 
             log_std_raw = logits[..., self.action_dimension :]
-            # Smooth tanh reparameterization onto [log_std_min, log_std_max]
-            # instead of a hard jnp.clip. A hard clip has exact-zero gradient
-            # outside its bounds: once the raw pre-squash output first
-            # overshoots the boundary, no gradient can ever pull it back --
-            # confirmed empirically (scripts/studies/probe_actor_log_std.py):
-            # log_std pinned to log_std_max within ~2000 episodes and never
-            # recovered for the rest of a 20k-episode run, independent of
-            # alpha's later decay. tanh keeps a real (if shrinking) gradient
-            # everywhere, with no dead zone, and -- unlike a straight-through
-            # estimator around the hard clip -- the raw value can't drift
-            # unboundedly far past the boundary either: further growth of
-            # log_std_raw yields diminishing returns by construction, so
-            # there's no "long return trip" once training's incentive
-            # reverses.
-            log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
-                jnp.tanh(log_std_raw) + 1.0
-            )
+            if self.log_std_no_squash:
+                # Ablation: no bound at all, not even a soft one -- log_std is
+                # the raw network output directly. There is no saturation edge
+                # to ever get stuck against; the tradeoff is that nothing stops
+                # std = exp(log_std) from drifting toward numerically extreme
+                # values in either direction if training pushes it there.
+                log_std = log_std_raw
+            else:
+                # Two-sided softplus soft-clip directly onto
+                # [log_std_min, log_std_max] -- see soft_clip() docstring.
+                # Only two knobs to reason about (the bounds themselves), no
+                # separate pre-squash raw-clip parameter needed.
+                log_std = soft_clip(log_std_raw, self.log_std_min, self.log_std_max)
             std = jnp.exp(log_std)
 
             noise = jax.random.normal(

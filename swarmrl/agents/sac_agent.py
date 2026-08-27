@@ -16,6 +16,7 @@ from swarmrl.observables.observable import Observable
 from swarmrl.replay_buffer.replay_buffer import ReplayBuffer
 from swarmrl.replay_buffer.sequence import SequenceWindow
 from swarmrl.replay_buffer.transition import Transition
+from swarmrl.sampling_strategies.gaussian_distribution import soft_clip
 from swarmrl.sampling_strategies.sampling_strategy import ContinuousSamplingStrategy
 from swarmrl.tasks.task import Task
 from swarmrl.utils.storage_utils import (
@@ -288,26 +289,27 @@ class SACAgent(Agent):
                     # found this pinned at the ceiling (zero variance, every
                     # dimension) within ~2000 episodes of a 20k-episode run
                     # and never recovering, independent of alpha's schedule.
-                    # Mirrors the sampling strategy's own smooth tanh
-                    # reparameterization onto [log_std_min, log_std_max]
-                    # (not a hard clip -- see gaussian_distribution.py).
+                    # Mirrors the sampling strategy's own two-sided softplus
+                    # soft_clip() onto [log_std_min, log_std_max] (see
+                    # gaussian_distribution.py) -- must match here or this
+                    # metric silently stops reflecting what the actor
+                    # actually samples.
                     log_std_raw = logits_jax[..., action_dim:]
-                    log_std_squashed = log_std_min + 0.5 * (
-                        log_std_max - log_std_min
-                    ) * (jnp.tanh(log_std_raw) + 1.0)
+                    no_squash = getattr(
+                        self.sampling_strategy, "log_std_no_squash", False
+                    )
+                    if no_squash:
+                        log_std_squashed = log_std_raw
+                    else:
+                        log_std_squashed = soft_clip(
+                            log_std_raw, log_std_min, log_std_max
+                        )
                     self._last_update_metrics["log_std_mean"] = float(
                         jnp.mean(log_std_squashed)
                     )
                     self._last_update_metrics["log_std_max"] = float(
                         jnp.max(log_std_squashed)
                     )
-                    # Raw, pre-squash value: since tanh saturates smoothly
-                    # rather than clipping hard, this can't drift unboundedly
-                    # the way it could under a straight-through estimator
-                    # around a hard clip -- but it's still worth watching to
-                    # see how deep into the saturating tail training pushes
-                    # it (large |raw| means a numerically-vanishing, if not
-                    # exactly zero, gradient in float32).
                     self._last_update_metrics["log_std_raw_mean"] = float(
                         jnp.mean(log_std_raw)
                     )
