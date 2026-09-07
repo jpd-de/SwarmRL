@@ -26,6 +26,13 @@ try:
 except ModuleNotFoundError:
     logger.warning("Could not find espressomd. Features will not be available")
 
+# Target chunk payload size (HDF5's own sweet spot is roughly 256 KiB-1 MiB).
+_TARGET_CHUNK_BYTES = 1024 * 1024
+# Upper bound on the time-axis chunk length, so datasets with a tiny per-step
+# payload (e.g. a single scalar per timestep) don't get an absurdly long
+# chunk just to hit the target byte size.
+_MAX_TIME_CHUNK = 10_000
+
 
 @dataclasses.dataclass()
 class MDParams:
@@ -1149,6 +1156,30 @@ class EspressoMD(Engine):
             property_dict["radius"],
         )
 
+    @staticmethod
+    def _choose_chunk_shape(shape, dtype, write_chunk_size):
+        """
+        Pick an HDF5 chunk shape for one dataset.
+
+        Never splits the per-step (non-time) axes - HDF5 can't partially
+        decompress a chunk, so fragmenting e.g. a particle or coordinate axis
+        forces decompressing far more blocks than a read actually needs. Only
+        the time axis is chunked, with a length chosen so each chunk's
+        uncompressed payload lands near `_TARGET_CHUNK_BYTES` (capped at
+        `_MAX_TIME_CHUNK`), then floored at `write_chunk_size` - chunks
+        smaller than what's flushed per write add no benefit, and this floor
+        always takes precedence over the cap.
+        """
+        per_step_shape = shape[1:]
+        per_step_elements = int(np.prod(per_step_shape)) if per_step_shape else 1
+        bytes_per_step = per_step_elements * np.dtype(dtype).itemsize
+
+        time_chunk = _TARGET_CHUNK_BYTES // max(bytes_per_step, 1)
+        time_chunk = min(time_chunk, _MAX_TIME_CHUNK)
+        time_chunk = max(time_chunk, write_chunk_size, 1)
+
+        return (time_chunk, *per_step_shape)
+
     def _init_h5_output(self):
         """
         Initialize the hdf5 output.
@@ -1179,31 +1210,40 @@ class EspressoMD(Engine):
 
         with h5py.File(self.h5_filename.as_posix(), "a") as h5_outfile:
             part_group = h5_outfile.require_group(self.h5_group_tag)
-            dataset_kwargs = dict(compression="gzip")
             traj_len = self.write_chunk_size
 
+            times_shape = (traj_len, 1, 1)
             part_group.require_dataset(
                 "Times",
-                shape=(traj_len, 1, 1),
+                shape=times_shape,
                 maxshape=(None, 1, 1),
                 dtype=float,
-                **dataset_kwargs,
+                compression="gzip",
+                chunks=self._choose_chunk_shape(
+                    times_shape, float, self.write_chunk_size
+                ),
             )
             for name in ["Ids", "Types"]:
+                shape = (traj_len, n_colloids, 1)
                 part_group.require_dataset(
                     name,
-                    shape=(traj_len, n_colloids, 1),
+                    shape=shape,
                     maxshape=(None, n_colloids, 1),
                     dtype=int,
-                    **dataset_kwargs,
+                    compression="gzip",
+                    chunks=self._choose_chunk_shape(shape, int, self.write_chunk_size),
                 )
             for name in ["Unwrapped_Positions"]:#, "Velocities", "Directors"]:
+                shape = (traj_len, n_colloids, 3)
                 part_group.require_dataset(
                     name,
-                    shape=(traj_len, n_colloids, 3),
+                    shape=shape,
                     maxshape=(None, n_colloids, 3),
                     dtype=float,
-                    **dataset_kwargs,
+                    compression="gzip",
+                    chunks=self._choose_chunk_shape(
+                        shape, float, self.write_chunk_size
+                    ),
                 )
         self.write_idx = 0
         self.h5_time_steps_written = 0
